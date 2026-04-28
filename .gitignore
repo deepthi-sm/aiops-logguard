@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+dist/
+.vite/
+*.log
+npm-debug.log*
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# Project artifacts (NEVER commit — they're huge and rebuilt by training pipeline)
+backend/artifacts/*.pt
+backend/artifacts/*.npy
+backend/artifacts/*.npz
+backend/artifacts/faiss.index
+backend/artifacts/embeddings_*.npy
+backend/artifacts/drain3_state.bin
+
+# Datasets (huge — pull from LogHub instead)
+backend/training/data/
+
+# Env files
+.env
+.env.local
+.env.*.local
+frontend/.env
+backend/.env
+
+# Docker
+*.pid
+
+# Claude Code (personal/agent-local settings)
+.claude/settings.local.json
