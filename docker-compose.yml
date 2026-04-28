@@ -1,0 +1,72 @@
+# AIOps-LogGuard — local dev stack.
+#
+# Services:
+#   redis    — Streams (logs:raw, anomalies:detected, anomalies:broadcast) + pubsub
+#   postgres — anomaly + drift_events + training_runs (schema applied on first boot)
+#   ollama   — local LLaMA host for the RAG worker (model pulled in a later PR)
+#   backend  — FastAPI; only /api/v1/health is wired up in this PR (Step 1)
+#
+# Bring up:    docker compose up -d
+# Tear down:   docker compose down
+# Wipe data:   docker compose down -v
+#
+# After it's up:  curl http://localhost:8000/api/v1/health
+
+services:
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: logguard
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Auto-applied on first boot only. Wipe with `docker compose down -v` to re-run.
+      - ./docs/architecture/database_schema.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d logguard"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      LOGGUARD_DB_URL: postgresql://postgres:postgres@postgres:5432/logguard
+      LOGGUARD_REDIS_URL: redis://redis:6379/0
+      LOGGUARD_LLAMA_HOST: http://ollama:11434
+      LOGGUARD_VERSION: "0.1.0"
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    # Artifacts (.pt, faiss.index, drain3_state.bin) live on the host — never baked
+    # into the image. CLAUDE.md "Hard rules" forbids retraining on deploy.
+    volumes:
+      - ./backend/artifacts:/app/artifacts
+
+volumes:
+  postgres_data:
+  ollama_data:

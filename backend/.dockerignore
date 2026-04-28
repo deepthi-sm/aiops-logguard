@@ -1,0 +1,23 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Artifacts are mounted as a volume, never baked into the image.
+artifacts/*.pt
+artifacts/*.npy
+artifacts/*.npz
+artifacts/faiss.index
+artifacts/drain3_state.bin
+artifacts/incidents.jsonl
+
+# Datasets
+training/data/
+
+# Local config
+.env
+.env.*
