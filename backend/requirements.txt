@@ -1,0 +1,13 @@
+# Step 1 (skeleton) — minimal deps to boot FastAPI with /health.
+# Each later PR appends what it needs (asyncpg, redis, torch, etc.).
+
+fastapi==0.115.4
+uvicorn[standard]==0.32.0
+pydantic==2.9.2
+
+# Tooling — run by CI (.github/workflows/ci.yml)
+ruff==0.7.2
+mypy==1.13.0
+pytest==8.3.3
+pytest-asyncio==0.24.0
+httpx==0.27.2
