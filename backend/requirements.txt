@@ -1,9 +1,13 @@
-# Step 1 (skeleton) — minimal deps to boot FastAPI with /health.
-# Each later PR appends what it needs (asyncpg, redis, torch, etc.).
+# Each PR appends only what it needs (asyncpg, redis, torch, etc.).
 
+# Step 1 — API skeleton
 fastapi==0.115.4
 uvicorn[standard]==0.32.0
 pydantic==2.9.2
+
+# Step 3 — training pipeline (data prep). Heavier deps (torch,
+# sentence-transformers, faiss) land in the next training PR.
+drain3==0.9.11
 
 # Tooling — run by CI (.github/workflows/ci.yml)
 ruff==0.7.2
