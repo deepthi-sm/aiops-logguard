@@ -5,9 +5,15 @@ fastapi==0.115.4
 uvicorn[standard]==0.32.0
 pydantic==2.9.2
 
-# Step 3 — training pipeline (data prep). Heavier deps (torch,
-# sentence-transformers, faiss) land in the next training PR.
+# Step 3 — training pipeline.
+# Data prep:
 drain3==0.9.11
+# Models + embeddings (PR 5). FAISS lands with the orchestrator in PR 6.
+torch==2.5.1
+sentence-transformers==3.3.1
+numpy==1.26.4
+scipy==1.14.1
+scikit-learn==1.5.2
 
 # Tooling — run by CI (.github/workflows/ci.yml)
 ruff==0.7.2
