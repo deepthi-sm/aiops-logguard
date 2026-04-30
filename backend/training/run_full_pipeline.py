@@ -42,7 +42,6 @@ import torch
 from training.calibrate import calibrate
 from training.data_prep import DATASETS, parse_log_file
 from training.embed import embed_or_load
-from training.labels import load_openstack_labels, make_window_labeler
 from training.sequence_builder import ParsedLog, Window, build_windows
 from training.train_autoencoder import (
     TrainConfig as AETrainConfig,
@@ -124,7 +123,9 @@ def step_data_prep(
 
     if sample is not None:
         # Take only the first `sample` lines from each file by streaming a temp
-        # file. Cheap for fast-iteration mode.
+        # file. Cheap for fast-iteration mode. We KEEP the original filename
+        # in the temp name (`_sample_<basename>`) so the per-file source tag
+        # below still carries the "abnormal" / "normal" hint.
         sampled_paths: list[Path] = []
         for p in log_paths:
             tmp = artifact_dir / f"_sample_{p.name}"
@@ -138,25 +139,55 @@ def step_data_prep(
             sampled_paths.append(tmp)
         log_paths = sampled_paths
 
-    return parse_log_file(log_paths, drain3_state_out=drain3_state, source_label=dataset)
+    # Process each file separately so each ParsedLog gets a source tag of the
+    # filename. LogHub's OpenStack release uses FILE-based labels (lines from
+    # `openstack_abnormal.log` are anomalies; the two `openstack_normal*.log`
+    # files are normal) — there's no separate `anomaly_labels.txt`. The
+    # labeller in step_windows looks for "abnormal" in `ev.source` to decide
+    # the window label. Drain3 state accumulates across files via FilePersistence.
+    all_events: list[ParsedLog] = []
+    line_offset = 0
+    for log_path in log_paths:
+        # `Path.stem` strips the .log so source becomes e.g. "openstack_abnormal"
+        # or "_sample_openstack_abnormal" in sample mode.
+        events = parse_log_file(
+            [log_path],
+            drain3_state_out=drain3_state,
+            source_label=log_path.stem,
+        )
+        # Re-number line_no globally so windows have unique line ranges.
+        for ev in events:
+            ev.line_no += line_offset
+        all_events.extend(events)
+        line_offset += len(events)
+    return all_events
 
 
 def step_windows(
     events: list[ParsedLog], *,
     dataset: str, data_dir: Path,
 ) -> list[Window]:
-    """Apply the dataset-specific labeller and emit sliding windows."""
+    """Apply the dataset-specific labeller and emit sliding windows.
+
+    Two labelling strategies, picked by dataset:
+
+    * **OpenStack** uses file-based labels (LogHub's standard layout):
+      events whose source filename contains "abnormal" are anomalies, the
+      rest are normal. A window is "anomaly" if ANY of its 20 events came
+      from an abnormal file — boundary windows that straddle the
+      normal→abnormal transition are correctly flagged.
+
+    * **Apache** has no separate label file in LogHub. Fall back to a
+      log-level heuristic (lines containing ERROR/WARN/FATAL → positive).
+    """
     _stamp(f"STEP 2 — windowing ({dataset})")
-    spec = DATASETS[dataset]
-    if spec["label_file"]:
-        label_path = data_dir / dataset / spec["label_file"]
-        if not label_path.exists():
-            print(f"[warn] {label_path} missing — labelling everything as 'normal'")
-            labeller = make_window_labeler(set())
-        else:
-            flagged = load_openstack_labels(label_path)
-            labeller = make_window_labeler(flagged)
-            print(f"[labels] {len(flagged):,} flagged ids loaded")
+    if dataset == "openstack":
+        def _label_by_source(chunk: list[ParsedLog]):
+            return "anomaly" if any(
+                "abnormal" in ev.source.lower() for ev in chunk
+            ) else "normal"
+        labeller = _label_by_source
+        print("[labels] OpenStack: anomaly = any event sourced from *_abnormal.log")
     else:
         # Apache: log-level fallback — lines containing ERROR/WARN/FATAL are
         # treated as positive class.
@@ -165,10 +196,14 @@ def step_windows(
                 lvl in ev.raw for ev in chunk for lvl in (" ERROR ", " WARN ", " FATAL ")
             ) else "normal"
         labeller = _label_by_log_level
+        print(f"[labels] {dataset}: log-level heuristic (ERROR/WARN/FATAL → anomaly)")
 
     windows = build_windows(events, label_fn=labeller)
     n_anom = sum(1 for w in windows if w.label == "anomaly")
-    print(f"[windows] {len(windows):,} total | {n_anom:,} anomaly ({n_anom / max(len(windows), 1) * 100:.1f}%)")
+    print(
+        f"[windows] {len(windows):,} total | {n_anom:,} anomaly "
+        f"({n_anom / max(len(windows), 1) * 100:.1f}%)"
+    )
     return windows
 
 
