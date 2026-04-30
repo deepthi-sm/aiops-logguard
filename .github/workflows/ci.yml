@@ -1,5 +1,17 @@
 name: CI
 
+# CI was broken from the start: the original workflow tried to `cd frontend`
+# in a job whose body referenced a directory that didn't exist, and a later
+# attempt to gate that job with `if: hashFiles('frontend/package.json') != ''`
+# at the JOB level was rejected by the parser ("Unrecognized function")
+# because hashFiles() runs before checkout — there are no files to hash. The
+# whole workflow file was failing YAML validation, so neither job ever ran.
+#
+# The frontend job is removed entirely until real frontend code lands. When
+# `frontend/package.json` is committed in a future PR, add a new `frontend:`
+# job here that gates correctly (step-level checks AFTER actions/checkout, or
+# a top-level workflow `paths:` trigger filter).
+
 on:
   pull_request:
     branches: [main]
@@ -56,32 +68,3 @@ jobs:
         run: |
           cd backend
           pytest -v
-
-  frontend:
-    runs-on: ubuntu-latest
-    # Skip until Person B lands the first frontend commit. Auto-activates when
-    # frontend/package.json appears — no manual re-enabling needed.
-    if: hashFiles('frontend/package.json') != ''
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: "npm"
-          cache-dependency-path: frontend/package-lock.json
-      - name: Install dependencies
-        run: |
-          cd frontend
-          npm ci
-      - name: Lint
-        run: |
-          cd frontend
-          npm run lint
-      - name: Type check
-        run: |
-          cd frontend
-          npx tsc --noEmit
-      - name: Build
-        run: |
-          cd frontend
-          npm run build
