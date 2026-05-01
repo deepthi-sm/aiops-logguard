@@ -4,11 +4,13 @@ import {
   Cpu,
   FileText,
   LayoutDashboard,
+  LogOut,
   MessageSquare,
   Settings as SettingsIcon,
   type LucideIcon,
 } from "lucide-react";
-import { NavLink } from "react-router-dom";
+import { NavLink, useNavigate } from "react-router-dom";
+import { useAuth } from "../hooks/useAuth";
 import { cn } from "../lib/cn";
 import { Logo } from "./Logo";
 import { ThemeToggle } from "./ThemeToggle";
@@ -46,7 +48,7 @@ interface NavItem {
 }
 
 const USER_ITEMS: NavItem[] = [
-  { to: "/", label: "Dashboard", icon: LayoutDashboard, end: true },
+  { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/anomalies", label: "Anomalies", icon: AlignLeft },
   { to: "/feedback", label: "Feedback", icon: MessageSquare },
   { to: "/settings", label: "Settings", icon: SettingsIcon },
@@ -80,6 +82,14 @@ function NavItemLink({ item }: { item: NavItem }) {
 }
 
 export function Sidebar() {
+  const { signOut, user } = useAuth();
+  const navigate = useNavigate();
+
+  async function handleSignOut() {
+    await signOut();
+    navigate("/login", { replace: true });
+  }
+
   return (
     <aside className="fixed left-0 top-0 z-10 flex h-full w-[220px] flex-col border-r-[0.5px] border-border-subtle bg-sidebar">
       {/* Brand */}
@@ -111,8 +121,13 @@ export function Sidebar() {
         </div>
       </nav>
 
-      {/* Bottom: live status + theme toggle */}
+      {/* Bottom: signed-in user, live status, theme toggle, sign out */}
       <div className="border-t-[0.5px] border-border-subtle px-3 pb-4 pt-3">
+        {user && (
+          <div className="mb-2 truncate px-2.5 py-1 text-[11px] text-tertiary">
+            {user.displayName || user.email}
+          </div>
+        )}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2 px-2.5 py-1.5 text-[11px] text-secondary">
             <span className="relative inline-flex h-1.5 w-1.5">
@@ -124,6 +139,14 @@ export function Sidebar() {
           </div>
           <ThemeToggle />
         </div>
+        <button
+          type="button"
+          onClick={handleSignOut}
+          className="mt-2 flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-[11px] text-tertiary transition-colors hover:bg-hover hover:text-primary"
+        >
+          <LogOut size={12} strokeWidth={1.5} />
+          <span>Sign out</span>
+        </button>
       </div>
     </aside>
   );
