@@ -117,6 +117,14 @@ Three steps in `backend/ml/postprocess.py`:
    - `ensemble_score > 0.85` → `warning`
    - else → `info`
 
+   **The critical-source set.** Rule 1 only fires when `source` matches a configured set of "critical infrastructure" hostnames. The set is resolved at runtime by `backend/ml/postprocess.get_critical_sources()`, with this priority:
+   1. The `LOGGUARD_CRITICAL_SOURCES` env var (comma-separated hostnames) — this is the production hook for ops to declare "these specific services pager me at 3am."
+   2. A demo default baked into `DEFAULT_CRITICAL_SOURCES`: `nova-api-prod-3`, `neutron-server-1`, `glance-api-2`, `keystone-api-2`, `namenode-prod-1`. Names cover one host per infrastructure pillar — compute (nova), networking (neutron), images (glance), auth (keystone), storage (HDFS namenode) — and align with the OpenStack training corpus and the frontend mock fixtures so the live demo and the dashboard's seeded data tell a coherent story.
+
+   Why ship a non-empty default? An empty set means rule 1 can never fire, so the entire critical tier silently drops to `warning`. That breaks the demo — and worse, it would silently break production deployments where someone forgot to set the env var. The default is small enough that real deployments will always override, but large enough that the demo behaves correctly out of the box.
+
+   **Contract with `tools/log_replay.py` (Step 8).** The replayer must emit `source` field values from this default set on a sufficient fraction of replayed lines so the critical branch actually exercises. The unit test `test_postprocess.TestGetCriticalSources::test_default_includes_every_log_replay_source` pins the list here so any future drift between the default and the replayer's emitted hostnames trips CI.
+
 Plus a **drift detector** (`backend/ml/drift.py`) running on a separate timer:
 - Maintains a rolling buffer of recent embeddings (last 10k windows)
 - Hourly, computes Population Stability Index (PSI) between buffer mean and training mean
