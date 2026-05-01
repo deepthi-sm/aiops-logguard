@@ -55,16 +55,23 @@ DEFAULT_TOP_CONTRIBUTING = 4
 # emits during a demo run. Override per-deployment via the
 # `LOGGUARD_CRITICAL_SOURCES` env var (comma-separated hostnames).
 #
+# Names chosen from the OpenStack training corpus + the frontend mock
+# fixtures (see frontend/src/api/mock.ts), so the live demo and the
+# already-rendered dashboard mocks tell a coherent story. Each name
+# represents a distinct infrastructure pillar: compute (nova-api),
+# networking (neutron), images (glance), auth (keystone), storage
+# (HDFS namenode).
+#
 # CONTRACT: when `tools/log_replay.py` lands (Step 8) it MUST emit the
 # `source` field on each `XADD` using one of these names — otherwise the
 # critical branch never matches and the demo falls back to warning/info
 # only. system_overview.md documents the rationale.
 DEFAULT_CRITICAL_SOURCES: frozenset[str] = frozenset({
-    "namenode-prod-3",
-    "datanode-pool-2",
-    "api-gateway-1",
-    "cache-redis-1",
-    "worker-svc-7",
+    "nova-api-prod-3",
+    "neutron-server-1",
+    "glance-api-2",
+    "keystone-api-2",
+    "namenode-prod-1",
 })
 
 CRITICAL_SOURCES_ENV = "LOGGUARD_CRITICAL_SOURCES"

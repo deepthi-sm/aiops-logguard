@@ -143,13 +143,15 @@ class TestGetCriticalSources:
         fire. Pin the list here so any future drift trips a test."""
         # Hardcoded once so the test catches an accidental rename of the
         # constants. If you legitimately change the demo set, update this
-        # list AND log_replay.py together.
+        # list AND log_replay.py together. Names align with the frontend
+        # mock fixtures (see frontend/src/api/mock.ts) so the demo + mock
+        # render with the same vocabulary.
         expected = {
-            "namenode-prod-3",
-            "datanode-pool-2",
-            "api-gateway-1",
-            "cache-redis-1",
-            "worker-svc-7",
+            "nova-api-prod-3",
+            "neutron-server-1",
+            "glance-api-2",
+            "keystone-api-2",
+            "namenode-prod-1",
         }
         assert set(DEFAULT_CRITICAL_SOURCES) == expected
 
