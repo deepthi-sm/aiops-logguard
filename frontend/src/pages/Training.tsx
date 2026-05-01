@@ -3,7 +3,7 @@ import { EyebrowLabel } from "../components/EyebrowLabel";
 import { cn } from "../lib/cn";
 
 /**
- * /training — model training run history.
+ * /admin/training — model training run history.
  *
  * Top section: the active run (the version actually loaded into
  * detection right now). Below it: a chronological list of past runs,

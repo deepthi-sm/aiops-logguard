@@ -28,14 +28,16 @@ export default function App() {
       <BrowserRouter>
         <Routes>
           <Route element={<Layout />}>
+            {/* User-facing routes */}
             <Route path="/" element={<Dashboard />} />
             <Route path="/anomalies" element={<AnomalyList />} />
             <Route path="/anomalies/:id" element={<AnomalyDetail />} />
-            <Route path="/system" element={<System />} />
             <Route path="/feedback" element={<Feedback />} />
-            <Route path="/training" element={<Training />} />
-            <Route path="/incidents" element={<Incidents />} />
             <Route path="/settings" element={<Settings />} />
+            {/* Admin routes — operator / engineer-only views */}
+            <Route path="/admin/system" element={<System />} />
+            <Route path="/admin/training" element={<Training />} />
+            <Route path="/admin/incidents" element={<Incidents />} />
           </Route>
         </Routes>
       </BrowserRouter>

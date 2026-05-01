@@ -4,7 +4,7 @@ import { EyebrowLabel } from "../components/EyebrowLabel";
 import { cn } from "../lib/cn";
 
 /**
- * /incidents — the FAISS-indexed knowledge base browser.
+ * /admin/incidents — the FAISS-indexed knowledge base browser.
  *
  *   ┌────────────────────────────────────────────────────────────┐
  *   │  Incident knowledge base                                   │
