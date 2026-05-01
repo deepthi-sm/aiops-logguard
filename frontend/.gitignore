@@ -6,6 +6,9 @@ dist-ssr/
 .vite/
 .eslintcache
 
+# Generated client (regenerate with `npm run generate-types`)
+src/api/generated.ts
+
 # Editor
 .vscode/*
 !.vscode/extensions.json
@@ -16,3 +19,8 @@ dist-ssr/
 *.njsproj
 *.sln
 *.sw?
+
+# Env
+.env
+.env.local
+.env.*.local
