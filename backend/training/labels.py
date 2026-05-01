@@ -5,13 +5,18 @@ For OpenStack: LogHub ships a separate `anomaly_labels.txt` listing instance
 ids labelled normal (0) or anomaly (1). A window is labelled "anomaly" if any
 of its 20 raw lines mentions a flagged instance id; "normal" otherwise.
 
-For Apache: LogHub doesn't ship a labels file. PR 6's calibration code uses a
-log-level fallback (lines containing ERROR / WARN / FATAL are treated as the
-positive class) so the cross-dataset evaluation has something to score
-against. That logic lives in calibrate.py, not here.
+For HDFS: LogHub ships `anomaly_label.csv` with rows `BlockId,Label` where
+Label is `Normal` or `Anomaly`. The flagged BlockId set feeds the same
+substring-match window labeller as OpenStack — block IDs (e.g.
+`blk_-1608999687919862906`) appear verbatim inside HDFS log lines.
+
+For Apache: LogHub doesn't ship a labels file. The cross-dataset evaluation
+(`training.eval_cross_dataset`) uses a log-level fallback (lines containing
+[error] / [warn] / [fatal] count as the positive class).
 """
 from __future__ import annotations
 
+import csv
 import re
 from collections.abc import Callable
 from pathlib import Path
@@ -45,6 +50,32 @@ def load_openstack_labels(label_file: Path) -> set[str]:
             parts = line.split()
             if len(parts) >= 2 and parts[1] == "1":
                 flagged.add(parts[0])
+    return flagged
+
+
+def load_hdfs_labels(label_file: Path) -> set[str]:
+    """Returns the set of BlockIds labelled `Anomaly` in HDFS's
+    `anomaly_label.csv`.
+
+    File format (CSV with header):
+
+        BlockId,Label
+        blk_-1608999687919862906,Normal
+        blk_7503483334202473044,Anomaly
+        ...
+
+    Block IDs appear verbatim inside HDFS log lines, so the resulting
+    flagged set feeds straight into `make_window_labeler` — the
+    substring-match path picks them up without any further processing.
+    """
+    flagged: set[str] = set()
+    with label_file.open("r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            block_id = (row.get("BlockId") or "").strip()
+            label = (row.get("Label") or "").strip().lower()
+            if block_id and label == "anomaly":
+                flagged.add(block_id)
     return flagged
 
 
