@@ -150,13 +150,6 @@ export function Training() {
         <h2 className="mb-[14px] text-[13px] font-medium text-primary">
           Run history
         </h2>
-        <p className="mb-3 max-w-2xl text-[12px] leading-relaxed text-tertiary">
-          Each pipeline run overwrites the artifacts in{" "}
-          <span className="font-mono text-secondary">backend/artifacts/</span>{" "}
-          (a Docker volume, gitignored). Older runs aren't archived to disk —
-          this list is reconstructed from{" "}
-          <span className="font-mono text-secondary">RESULTS.md</span>.
-        </p>
         <div className="overflow-hidden rounded-lg border-[0.5px] border-border-subtle bg-card">
           <div className="grid grid-cols-[180px_88px_120px_100px_88px_1fr] items-center gap-4 border-b-[0.5px] border-border-subtle px-4 py-2.5 text-[10px] uppercase tracking-wider text-tertiary">
             <div>Trained</div>
