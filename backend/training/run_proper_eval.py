@@ -83,7 +83,6 @@ from training.eval_holdout_openstack import (
 )
 from training.labels import (
     load_hdfs_labels,
-    load_openstack_labels,
     make_window_labeler,
 )
 
@@ -114,6 +113,12 @@ TEST_SEED = 99  # different seed than training (42) for an independent split
 
 # Defaults
 DEFAULT_OUTPUT_DIR = Path("artifacts_proper")
+# Markdown results files live alongside the existing RESULTS.md so they
+# show up under git tracking by default. Binaries (.pt, .npy, drain3
+# state) stay under DEFAULT_OUTPUT_DIR which is gitignored. Splitting
+# the two paths fixes the trap where committable docs would otherwise
+# land in an artifacts/-style directory and silently fail to push.
+DEFAULT_RESULTS_DIR = Path("training")
 DEFAULT_F1_FLOOR = 0.7
 DEFAULT_DATA_DIR = Path("training/data")
 
@@ -163,8 +168,14 @@ def _parse_dataset_lines(
     sample: int | None,
 ):
     """Parse the dataset through Drain3 (writes drain3_state_out).
-    For HDFS we apply a sampler at parse time so we don't carry
-    11M lines in memory if the user passed --hdfs-sample."""
+
+    Each log file is parsed separately and its events tagged with
+    `source = file.stem`. This matters for OpenStack: LogHub's
+    OpenStack release ships labels by FILE (`openstack_abnormal.log`
+    is the anomaly stream, the two `_normal*.log` files are normal),
+    not via the empty `anomaly_labels.txt`. Mirrors the labelling
+    strategy used by `run_full_pipeline.step_data_prep`.
+    """
     spec = DATASETS[dataset_key]
     extracted = _ensure_downloaded(dataset_key, data_dir)
     log_paths = [extracted / f for f in spec["log_files"]]
@@ -175,8 +186,8 @@ def _parse_dataset_lines(
         )
 
     if sample is not None:
-        # Materialise a sampled file so parse_log_file doesn't have to
-        # support sub-sampling itself.
+        # Materialise a sampled file PER source file so each one keeps
+        # its filename hint (`openstack_abnormal` etc.).
         sampled_paths: list[Path] = []
         for p in log_paths:
             sp = p.with_suffix(f".sample-{sample}.log")
@@ -185,11 +196,22 @@ def _parse_dataset_lines(
             sampled_paths.append(sp)
         log_paths = sampled_paths
 
-    return parse_log_file(
-        log_paths,
-        drain3_state_out=drain3_state_out,
-        source_label=dataset_key,
-    )
+    # Process each file separately so each ParsedLog gets a per-file
+    # source tag. Drain3 state accumulates across files via the same
+    # FilePersistence path.
+    all_events = []
+    line_offset = 0
+    for p in log_paths:
+        events = parse_log_file(
+            [p],
+            drain3_state_out=drain3_state_out,
+            source_label=p.stem,
+        )
+        for ev in events:
+            ev.line_no += line_offset
+        all_events.extend(events)
+        line_offset += len(events)
+    return all_events
 
 
 def _materialise_sample(src: Path, dst: Path, n: int) -> None:
@@ -204,19 +226,29 @@ def _materialise_sample(src: Path, dst: Path, n: int) -> None:
 def _label_windows_for(dataset_key: str, data_dir: Path):
     """Build the label_fn appropriate to this dataset.
 
-    OpenStack: anomaly_labels.txt (instance_id 0/1 records).
-    HDFS:      anomaly_label.csv (BlockId, Normal/Anomaly).
+    OpenStack: file-based — events sourced from a `*_abnormal*` filename
+               are anomalies. The LogHub OpenStack release ships labels
+               this way (the `anomaly_labels.txt` file is empty); mirrors
+               `run_full_pipeline.step_windows`.
+    HDFS:      `anomaly_label.csv` (BlockId, Normal/Anomaly) — block IDs
+               appear verbatim in raw lines so the substring-match
+               labeller picks them up.
+    Apache:    log-level fallback (handled by caller).
     """
+    if dataset_key == "openstack":
+        def _label_by_source(chunk):
+            return "anomaly" if any(
+                "abnormal" in ev.source.lower() for ev in chunk
+            ) else "normal"
+        return _label_by_source
+
     spec = DATASETS[dataset_key]
     if spec["label_file"] is None:
-        # Apache — caller uses level-fallback labelling.
         return make_level_labeler()
     label_path = data_dir / spec["extract_to"] / spec["label_file"]
     if not label_path.exists():
         raise FileNotFoundError(f"label file missing: {label_path}")
-    if dataset_key == "openstack":
-        flagged = load_openstack_labels(label_path)
-    elif dataset_key == "hdfs":
+    if dataset_key == "hdfs":
         flagged = load_hdfs_labels(label_path)
     else:
         raise ValueError(f"no labeller for dataset {dataset_key!r}")
@@ -704,7 +736,17 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Proper evaluation: 70/15/15 split, two trainings, three test sets.",
     )
-    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument(
+        "--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR,
+        help=("Where binary artifacts (transformer.pt, embeddings.npy, "
+              "drain3 state) land. Gitignored by convention."),
+    )
+    parser.add_argument(
+        "--results-dir", type=Path, default=DEFAULT_RESULTS_DIR,
+        help=("Where the four RESULTS_*.md files land. Defaults to "
+              "`training/` so the docs sit next to RESULTS.md and "
+              "are git-tracked."),
+    )
     parser.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
     parser.add_argument(
         "--openstack-sample", type=int, default=None,
@@ -738,10 +780,13 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     output_dir: Path = args.output_dir.resolve()
+    results_dir: Path = args.results_dir.resolve()
     data_dir: Path = args.data_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    log.info("output → %s", output_dir)
-    log.info("data   → %s", data_dir)
+    results_dir.mkdir(parents=True, exist_ok=True)
+    log.info("output  → %s  (binaries; gitignored)", output_dir)
+    log.info("results → %s  (markdown; tracked by git)", results_dir)
+    log.info("data    → %s", data_dir)
 
     t0 = time.monotonic()
 
@@ -858,20 +903,23 @@ def main(argv: list[str] | None = None) -> int:
         log.error("Pass --f1-floor 0.0 to suppress this and write results anyway.")
         log.error("=" * 70)
         # Still write the per-test-set files so the user can see what happened.
-        _write_all_results(cells, output_dir)
+        _write_all_results(cells, results_dir=results_dir)
         return 2
 
     # ---- Phase 6: write all four results files -------------------------
-    _write_all_results(cells, output_dir)
+    _write_all_results(cells, results_dir=results_dir)
 
     elapsed = time.monotonic() - t0
     log.info("=" * 70)
-    log.info("DONE in %.1f min — see %s/RESULTS_SUMMARY.md", elapsed / 60, output_dir)
+    log.info("DONE in %.1f min — see %s/RESULTS_SUMMARY.md", elapsed / 60, results_dir)
     log.info("=" * 70)
     return 0
 
 
-def _write_all_results(cells: list[EvalCell], output_dir: Path) -> None:
+def _write_all_results(cells: list[EvalCell], *, results_dir: Path) -> None:
+    """Writes the four markdown files + JSON snapshot to `results_dir`.
+    All paths land under `backend/training/` by default so they sit next
+    to the existing RESULTS.md and get git-tracked."""
     by_key = {(c.model_name, c.test_set): c for c in cells}
 
     write_results_holdout(
@@ -881,7 +929,7 @@ def _write_all_results(cells: list[EvalCell], output_dir: Path) -> None:
         "in-distribution generalisation number for both models.",
         cell_a=by_key[("openstack_only", "openstack_test")],
         cell_b=by_key[("combined", "openstack_test")],
-        out_path=output_dir / "RESULTS_OPENSTACK_TEST.md",
+        out_path=results_dir / "RESULTS_OPENSTACK_TEST.md",
     )
     write_results_holdout(
         "Held-Out HDFS Test",
@@ -890,14 +938,14 @@ def _write_all_results(cells: list[EvalCell], output_dir: Path) -> None:
         "is fully cross-dataset since HDFS was never in its training set.",
         cell_a=by_key[("openstack_only", "hdfs_test")],
         cell_b=by_key[("combined", "hdfs_test")],
-        out_path=output_dir / "RESULTS_HDFS_TEST.md",
+        out_path=results_dir / "RESULTS_HDFS_TEST.md",
     )
     write_results_apache(
         cell_a=by_key[("openstack_only", "apache")],
         cell_b=by_key[("combined", "apache")],
-        out_path=output_dir / "RESULTS_APACHE.md",
+        out_path=results_dir / "RESULTS_APACHE.md",
     )
-    write_summary(cells, out_path=output_dir / "RESULTS_SUMMARY.md")
+    write_summary(cells, out_path=results_dir / "RESULTS_SUMMARY.md")
 
     # Persist the raw numbers as JSON too — handy for re-rendering tables
     # without re-running the eval.
@@ -912,7 +960,7 @@ def _write_all_results(cells: list[EvalCell], output_dir: Path) -> None:
         }
         for c in cells
     }
-    (output_dir / "results_snapshot.json").write_text(
+    (results_dir / "results_snapshot.json").write_text(
         json.dumps(snapshot, indent=2), encoding="utf-8",
     )
 

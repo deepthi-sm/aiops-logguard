@@ -32,6 +32,11 @@ backend/artifacts/faiss.index
 backend/artifacts/embeddings_*.npy
 backend/artifacts/drain3_state.bin
 
+# Proper-eval orchestrator output dirs (binaries only — RESULTS_*.md
+# are written separately to backend/training/ and ARE tracked).
+backend/artifacts_proper/
+backend/artifacts_proper_*/
+
 # Datasets (huge — pull from LogHub instead)
 backend/training/data/
 
