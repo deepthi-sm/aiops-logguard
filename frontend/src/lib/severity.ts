@@ -56,3 +56,61 @@ export function driftLabel(s: DriftLevel): string {
       return "retrain needed";
   }
 }
+
+// -- Log-line backgrounds (level-aware) ---------------------------------
+
+/** Detect the leading log level token, if any. */
+export function detectLogLevel(line: string): string | null {
+  const match = line.match(/^(FATAL|ERROR|WARNING|WARN|INFO|DEBUG|TRACE)\s/);
+  return match?.[1] ?? null;
+}
+
+/** Map a log level to its (R, G, B) triplet — dark-mode tokens. Light mode
+ * shows these as lighter pink/yellow/cyan tints, which still reads correctly. */
+function levelToRgb(level: string | null): [number, number, number] | null {
+  switch (level) {
+    case "ERROR":
+    case "FATAL":
+      return [251, 113, 133]; // --severity-critical (#fb7185)
+    case "WARN":
+    case "WARNING":
+      return [251, 191, 36];  // --severity-warning  (#fbbf24)
+    case "INFO":
+      return [103, 232, 249]; // --severity-info     (#67e8f9)
+    case "DEBUG":
+    case "TRACE":
+      return [122, 122, 133]; // --text-tertiary muted gray
+    default:
+      return null;
+  }
+}
+
+/**
+ * Background tint for a log line based on its level + an attention weight.
+ * Returns an inline-style CSS background-color string, or `undefined` if no
+ * level is detected and no fallback is wanted. Caller wraps in {{ background }}.
+ *
+ * - Lines with detectable level: tinted by that level's color, intensity =
+ *   attention × 1.8 capped at 0.6 (matches the spec's coral attention scale).
+ * - Lines without a level: returns the spec's coral fallback so the row
+ *   still shows shading proportional to attention.
+ */
+export function logLineAttentionBackground(
+  line: string,
+  attention: number,
+): string {
+  const rgb = levelToRgb(detectLogLevel(line)) ?? [251, 113, 133];
+  const alpha = Math.min(attention * 1.8, 0.6);
+  return `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${alpha.toFixed(3)})`;
+}
+
+/**
+ * Faint level tint for non-attention rows in the SequencePreview — gives
+ * every line *some* color so INFO rows don't read as "untagged".
+ * Returns undefined when no level is detected (line stays plain).
+ */
+export function logLineFaintBackground(line: string): string | undefined {
+  const rgb = levelToRgb(detectLogLevel(line));
+  if (!rgb) return undefined;
+  return `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, 0.08)`;
+}

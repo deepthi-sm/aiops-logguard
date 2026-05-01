@@ -1,3 +1,4 @@
+import { logLineAttentionBackground } from "../lib/severity";
 import type { ContributingLine } from "../types";
 import { LogLine } from "./LogLine";
 
@@ -28,28 +29,21 @@ export function AttentionLines({ lines }: { lines: ContributingLine[] }) {
         </div>
       ) : (
         <div className="space-y-1">
-          {lines.map((l, i) => {
-            // Linear scaling boosted ×1.8 so a max-attention of ~0.31
-            // (typical) lands around alpha 0.55 — visible but readable.
-            const alpha = Math.min(l.attention * 1.8, 0.6);
-            return (
-              <div
-                key={i}
-                style={{
-                  background: `rgba(251, 113, 133, ${alpha.toFixed(3)})`,
-                }}
-                className="flex items-start gap-3 rounded px-3.5 py-2 font-mono text-[11px]"
-              >
-                <LogLine
-                  line={l.line}
-                  className="min-w-0 flex-1 break-all text-primary"
-                />
-                <span className="shrink-0 font-mono tabular-nums text-tertiary">
-                  {l.attention.toFixed(2)}
-                </span>
-              </div>
-            );
-          })}
+          {lines.map((l, i) => (
+            <div
+              key={i}
+              style={{ background: logLineAttentionBackground(l.line, l.attention) }}
+              className="flex items-start gap-3 rounded px-3.5 py-2 font-mono text-[11px]"
+            >
+              <LogLine
+                line={l.line}
+                className="min-w-0 flex-1 break-all text-primary"
+              />
+              <span className="shrink-0 font-mono tabular-nums text-tertiary">
+                {l.attention.toFixed(2)}
+              </span>
+            </div>
+          ))}
         </div>
       )}
     </section>

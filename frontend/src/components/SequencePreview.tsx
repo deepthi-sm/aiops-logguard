@@ -1,6 +1,10 @@
 import { ChevronRight } from "lucide-react";
 import { useState } from "react";
 import { cn } from "../lib/cn";
+import {
+  logLineAttentionBackground,
+  logLineFaintBackground,
+} from "../lib/severity";
 import type { ContributingLine } from "../types";
 import { LogLine } from "./LogLine";
 
@@ -44,12 +48,15 @@ export function SequencePreview({
         <div className="overflow-hidden rounded-lg border-[0.5px] border-border-subtle bg-card">
           {lines.map((line, i) => {
             const attention = attentionByLine.get(line);
-            const alpha =
-              attention !== undefined ? Math.min(attention * 1.8, 0.6) : 0;
-            const style =
+            // Lines that drove the model's verdict get the strong
+            // level-tinted attention shading; every other line gets a faint
+            // tint of its own level color so INFO/WARN/ERROR are at least
+            // visually distinguishable.
+            const background =
               attention !== undefined
-                ? { background: `rgba(251, 113, 133, ${alpha.toFixed(3)})` }
-                : undefined;
+                ? logLineAttentionBackground(line, attention)
+                : logLineFaintBackground(line);
+            const style = background ? { background } : undefined;
             return (
               <div
                 key={i}
