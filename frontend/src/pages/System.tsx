@@ -12,7 +12,7 @@ import { driftClassName, driftLabel } from "../lib/severity";
 import type { DriftStatus } from "../types";
 
 /**
- * /system — the "is the engine running?" page. Three sections:
+ * /admin/system — the "is the engine running?" page. Three sections:
  *
  *   1. Drift status — big mono number + status pill + horizontal gauge SVG
  *      with green / amber / coral zones at 0–0.25 / 0.25–0.4 / 0.4–1.0.
