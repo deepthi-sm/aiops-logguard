@@ -138,56 +138,66 @@ function GeneralTab() {
 
 function AlertingTab() {
   return (
-    <div className="rounded-lg border-[0.5px] border-border-subtle bg-card">
-      <SettingRow
-        label="PagerDuty"
-        hint="Critical anomalies route here. Behind LOGGUARD_ALERT_PAGERDUTY_ENABLED."
-      >
-        <ChannelStatus state="off" detail="Routing key not configured" />
-      </SettingRow>
-      <SettingRow label="Slack webhook" hint="Critical + warning route here.">
-        <ChannelStatus state="off" detail="Webhook URL not configured" />
-      </SettingRow>
-      <SettingRow label="Email digest" hint="Daily roll-up to engineering@.">
-        <ChannelStatus state="off" detail="SMTP not configured" />
-      </SettingRow>
-      <SettingRow
-        label="Severity threshold"
-        hint="Minimum severity that triggers a page."
-      >
-        <span className="rounded-md border-[0.5px] border-critical/40 bg-critical/10 px-2 py-0.5 text-[10px] uppercase tracking-wider text-critical">
-          critical
-        </span>
-      </SettingRow>
+    <div>
+      <p className="mb-4 max-w-2xl text-[12px] leading-relaxed text-tertiary">
+        Alerting integrations are off by default in development — set the
+        relevant{" "}
+        <span className="font-mono text-secondary">LOGGUARD_ALERT_*</span>{" "}
+        env vars (routing key, webhook URL, SMTP credentials) to wire each
+        channel up. No real alerts fire until the corresponding feature flag
+        is enabled.
+      </p>
+      <div className="rounded-lg border-[0.5px] border-border-subtle bg-card">
+        <SettingRow
+          label="PagerDuty"
+          hint="Critical anomalies page on-call. Gated by LOGGUARD_ALERT_PAGERDUTY_ENABLED."
+        >
+          <ChannelStatus configured={false} envVar="LOGGUARD_ALERT_PAGERDUTY_KEY" />
+        </SettingRow>
+        <SettingRow label="Slack webhook" hint="Critical + warning route here.">
+          <ChannelStatus configured={false} envVar="LOGGUARD_ALERT_SLACK_WEBHOOK" />
+        </SettingRow>
+        <SettingRow label="Email digest" hint="Daily roll-up to engineering@.">
+          <ChannelStatus configured={false} envVar="LOGGUARD_ALERT_SMTP_HOST" />
+        </SettingRow>
+        <SettingRow
+          label="Severity threshold"
+          hint="Minimum severity that triggers a page."
+        >
+          <span className="rounded-md border-[0.5px] border-critical/40 bg-critical/10 px-2 py-0.5 text-[10px] uppercase tracking-wider text-critical">
+            critical
+          </span>
+        </SettingRow>
+      </div>
     </div>
   );
 }
 
 function ChannelStatus({
-  state,
-  detail,
+  configured,
+  envVar,
 }: {
-  state: "on" | "off";
-  detail: string;
+  configured: boolean;
+  envVar: string;
 }) {
   return (
     <div className="flex flex-col items-end">
       <span
         className={cn(
           "inline-flex items-center gap-1.5 text-[11px]",
-          state === "on" ? "text-success" : "text-tertiary",
+          configured ? "text-success" : "text-tertiary",
         )}
       >
         <span
           className={cn(
             "h-1.5 w-1.5 rounded-full",
-            state === "on" ? "bg-success" : "bg-border-default",
+            configured ? "bg-success" : "bg-border-default",
           )}
         />
-        {state === "on" ? "enabled" : "disabled"}
+        {configured ? "configured" : "not configured"}
       </span>
       <span className="mt-0.5 font-mono text-[11px] text-tertiary">
-        {detail}
+        {envVar}
       </span>
     </div>
   );
