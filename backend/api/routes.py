@@ -1,12 +1,12 @@
 """
-Stub REST endpoints for the integration contract (docs/architecture/api_contract.md).
+REST endpoints — the integration contract with the frontend
+(docs/architecture/api_contract.md).
 
-Step 2 of CLAUDE.md "Build order": every endpoint returns hardcoded fixtures
-shaped exactly like real responses, so /openapi.json is publishable and Person
-B can codegen her TypeScript client. DB / Redis wiring lands in Step 4.
-
-The fixtures are imported from api.mock_data so the same data backs every
-endpoint and the tests can assert against known values.
+Step 4b-ii: handlers now query Postgres via `api.repository`. The schema
+contract (Pydantic models, status codes, pagination cursor) is unchanged
+from Step 2 — only the data source is different. Tests seed the DB with
+the same fixtures Step 2 served from `mock_data`, so existing assertions
+still hold.
 """
 import base64
 import binascii
@@ -14,9 +14,11 @@ import json
 from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Query, Response, status
+import asyncpg
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
-from api import mock_data
+from api import repository
+from api.db import get_pool
 from api.schemas import (
     Anomaly,
     AnomalyListResponse,
@@ -58,31 +60,35 @@ def _decode_cursor(cursor: str | None) -> int:
 
 @router.get("/anomalies", response_model=AnomalyListResponse)
 async def list_anomalies(
+    pool: Annotated[asyncpg.Pool, Depends(get_pool)],
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     since: Annotated[datetime | None, Query()] = None,
     severity: Annotated[Severity | None, Query()] = None,
     cursor: Annotated[str | None, Query()] = None,
 ) -> AnomalyListResponse:
-    items = mock_data.all_anomalies()
-
-    if severity is not None:
-        items = [a for a in items if a.severity == severity]
-
-    if since is not None:
-        # Normalise to UTC so naive timestamps don't compare against aware ones.
-        since_aware = since if since.tzinfo else since.replace(tzinfo=UTC)
-        items = [a for a in items if a.detected_at > since_aware]
-
     offset = _decode_cursor(cursor)
-    page = items[offset : offset + limit]
-    next_offset = offset + len(page)
-    next_cursor = _encode_cursor(next_offset) if next_offset < len(items) else None
-    return AnomalyListResponse(items=page, next_cursor=next_cursor)
+    # Normalise to UTC so naive timestamps don't compare against aware ones.
+    since_aware = (
+        since.replace(tzinfo=UTC) if since and since.tzinfo is None else since
+    )
+    items, total = await repository.list_anomalies(
+        pool,
+        limit=limit,
+        offset=offset,
+        severity=severity,
+        since=since_aware,
+    )
+    next_offset = offset + len(items)
+    next_cursor = _encode_cursor(next_offset) if next_offset < total else None
+    return AnomalyListResponse(items=items, next_cursor=next_cursor)
 
 
 @router.get("/anomalies/{anomaly_id}", response_model=Anomaly)
-async def get_anomaly(anomaly_id: str) -> Anomaly:
-    a = mock_data.find_anomaly(anomaly_id)
+async def get_anomaly(
+    anomaly_id: str,
+    pool: Annotated[asyncpg.Pool, Depends(get_pool)],
+) -> Anomaly:
+    a = await repository.get_anomaly(pool, anomaly_id)
     if a is None:
         raise HTTPException(status_code=404, detail="Anomaly not found")
     return a
@@ -96,14 +102,15 @@ async def get_anomaly(anomaly_id: str) -> Anomaly:
         404: {"description": "Anomaly not found"},
     },
 )
-async def get_explanation(anomaly_id: str) -> Explanation | Response:
-    a = mock_data.find_anomaly(anomaly_id)
-    if a is None:
+async def get_explanation(
+    anomaly_id: str,
+    pool: Annotated[asyncpg.Pool, Depends(get_pool)],
+) -> Explanation | Response:
+    status_value, explanation = await repository.get_explanation(pool, anomaly_id)
+    if status_value is None:
         raise HTTPException(status_code=404, detail="Anomaly not found")
-    if a.explanation_status == "pending":
-        # Per contract: 202 with empty body. Frontend polls or waits for ws.
+    if status_value == "pending":
         return Response(status_code=status.HTTP_202_ACCEPTED)
-    explanation = mock_data.explanation_for(anomaly_id)
     if explanation is None:
         # explanation_status is "failed" — no detail available. Surface as 500
         # for now; a richer error payload lands when the RAG worker arrives.
@@ -112,30 +119,38 @@ async def get_explanation(anomaly_id: str) -> Explanation | Response:
 
 
 @router.post("/anomalies/{anomaly_id}/feedback", response_model=FeedbackResponse)
-async def post_feedback(anomaly_id: str, body: FeedbackRequest) -> FeedbackResponse:
-    if mock_data.find_anomaly(anomaly_id) is None:
+async def post_feedback(
+    anomaly_id: str,
+    body: FeedbackRequest,
+    pool: Annotated[asyncpg.Pool, Depends(get_pool)],
+) -> FeedbackResponse:
+    updated = await repository.record_feedback(pool, anomaly_id, body.feedback)
+    if not updated:
         raise HTTPException(status_code=404, detail="Anomaly not found")
-    # Stub: accept and ack. Real impl writes to anomalies.feedback in PR 4.
-    _ = body  # intentionally unused — schema validation is the contract guard
     return FeedbackResponse(ok=True)
 
 
 # ---------- /metrics ----------
 
 @router.get("/metrics/summary", response_model=MetricsSummary)
-async def metrics_summary() -> MetricsSummary:
-    return mock_data.metrics_summary()
+async def metrics_summary(
+    pool: Annotated[asyncpg.Pool, Depends(get_pool)],
+) -> MetricsSummary:
+    return await repository.metrics_summary(pool)
 
 
 @router.get("/metrics/timeline", response_model=TimelineResponse)
 async def metrics_timeline(
     window: Annotated[TimelineWindow, Query()],
+    pool: Annotated[asyncpg.Pool, Depends(get_pool)],
 ) -> TimelineResponse:
-    return mock_data.timeline(window)
+    return await repository.metrics_timeline(pool, window)
 
 
 # ---------- /system ----------
 
 @router.get("/system/drift", response_model=DriftStatus)
-async def system_drift() -> DriftStatus:
-    return mock_data.drift_status()
+async def system_drift(
+    pool: Annotated[asyncpg.Pool, Depends(get_pool)],
+) -> DriftStatus:
+    return await repository.drift_status(pool)

@@ -17,6 +17,9 @@ faiss-cpu==1.9.0
 # Step 4 — live ingestion (Redis stream consumer + Drain3 inference).
 redis==5.2.0
 
+# Step 4b-ii — Postgres persistence (asyncpg pool + migrations).
+asyncpg==0.30.0
+
 # Tooling — run by CI (.github/workflows/ci.yml)
 ruff==0.7.2
 mypy==1.13.0
