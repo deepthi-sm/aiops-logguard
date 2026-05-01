@@ -9,10 +9,13 @@ from api.schemas import Anomaly
 from ingestion.sequence_builder import ParsedLog, build_windows
 from ml.detector import DetectionResult
 from ml.postprocess import (
+    CRITICAL_SOURCES_ENV,
+    DEFAULT_CRITICAL_SOURCES,
     AnomalyContext,
     Deduplicator,
     build_anomaly,
     decide_severity,
+    get_critical_sources,
     new_anomaly_id,
 )
 from ml.transformer import WINDOW_LEN
@@ -65,17 +68,25 @@ class TestDecideSeverity:
 
     def test_high_failure_prob_alone_is_not_critical(self):
         """The source must be in the critical set; otherwise we step down to
-        warning/info."""
+        warning/info. Pass an explicit empty frozenset so the env-driven
+        default doesn't accidentally include 'some-other-host'."""
         det = _detection(transformer_prob=0.9, ensemble=0.9)
-        assert decide_severity(det, "some-other-host") == "warning"
+        assert (
+            decide_severity(det, "some-other-host", critical_sources=frozenset())
+            == "warning"
+        )
 
     def test_warning_when_ensemble_high(self):
         det = _detection(ensemble=0.9, transformer_prob=0.5)
-        assert decide_severity(det, "host-1") == "warning"
+        assert (
+            decide_severity(det, "host-1", critical_sources=frozenset()) == "warning"
+        )
 
     def test_info_when_neither_rule_fires(self):
         det = _detection(ensemble=0.5, transformer_prob=0.5)
-        assert decide_severity(det, "host-1") == "info"
+        assert (
+            decide_severity(det, "host-1", critical_sources=frozenset()) == "info"
+        )
 
     def test_severity_is_in_closed_set(self):
         """Sanity: every branch returns one of the three contract values."""
@@ -86,6 +97,61 @@ class TestDecideSeverity:
                 "warning",
                 "info",
             )
+
+    def test_default_critical_sources_used_when_none_passed(self, monkeypatch):
+        """Sentinel behaviour: critical_sources=None falls through to the
+        env-driven default. This is the production code path."""
+        monkeypatch.delenv(CRITICAL_SOURCES_ENV, raising=False)
+        # Ensemble high enough to clear the warning threshold so we can
+        # distinguish "critical default fired" from "fell to info".
+        det = _detection(transformer_prob=0.9, ensemble=0.9)
+        # A name from the demo default should fire critical.
+        any_default_source = next(iter(DEFAULT_CRITICAL_SOURCES))
+        assert decide_severity(det, any_default_source) == "critical"
+        # A name NOT in the default should land at warning (ensemble high
+        # but source not in critical set).
+        assert decide_severity(det, "definitely-not-in-the-default-set") == "warning"
+
+
+# -- get_critical_sources --------------------------------------------------
+
+
+class TestGetCriticalSources:
+    def test_unset_env_returns_demo_default(self, monkeypatch):
+        monkeypatch.delenv(CRITICAL_SOURCES_ENV, raising=False)
+        assert get_critical_sources() == DEFAULT_CRITICAL_SOURCES
+
+    def test_empty_env_returns_demo_default(self, monkeypatch):
+        """Empty string is the same as unset — never silently disable
+        critical alerting."""
+        monkeypatch.setenv(CRITICAL_SOURCES_ENV, "")
+        assert get_critical_sources() == DEFAULT_CRITICAL_SOURCES
+
+    def test_env_overrides_default(self, monkeypatch):
+        monkeypatch.setenv(CRITICAL_SOURCES_ENV, "host-a, host-b ,host-c")
+        assert get_critical_sources() == frozenset({"host-a", "host-b", "host-c"})
+
+    def test_env_with_only_whitespace_falls_back(self, monkeypatch):
+        monkeypatch.setenv(CRITICAL_SOURCES_ENV, "   ,  ,   ")
+        # All entries strip to empty → fall back to default rather than
+        # silently disabling critical alerting.
+        assert get_critical_sources() == DEFAULT_CRITICAL_SOURCES
+
+    def test_default_includes_every_log_replay_source(self):
+        """Sanity: when tools/log_replay.py lands (Step 8) it must emit
+        every name in this set, otherwise critical alerts silently never
+        fire. Pin the list here so any future drift trips a test."""
+        # Hardcoded once so the test catches an accidental rename of the
+        # constants. If you legitimately change the demo set, update this
+        # list AND log_replay.py together.
+        expected = {
+            "namenode-prod-3",
+            "datanode-pool-2",
+            "api-gateway-1",
+            "cache-redis-1",
+            "worker-svc-7",
+        }
+        assert set(DEFAULT_CRITICAL_SOURCES) == expected
 
 
 # -- Deduplicator -----------------------------------------------------------

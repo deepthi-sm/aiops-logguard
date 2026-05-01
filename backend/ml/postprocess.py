@@ -29,6 +29,7 @@ single-worker demo.
 """
 from __future__ import annotations
 
+import os
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -48,6 +49,39 @@ DEFAULT_DEDUP_WINDOW_S = 60
 # How many of the highest-attention events to surface as `top_contributing_lines`.
 DEFAULT_TOP_CONTRIBUTING = 4
 
+# Demo default for the critical-source set. An empty default would mean no
+# critical-severity anomaly ever fires, which silently breaks the demo —
+# so we ship a concrete list aligned with what `tools/log_replay.py`
+# emits during a demo run. Override per-deployment via the
+# `LOGGUARD_CRITICAL_SOURCES` env var (comma-separated hostnames).
+#
+# CONTRACT: when `tools/log_replay.py` lands (Step 8) it MUST emit the
+# `source` field on each `XADD` using one of these names — otherwise the
+# critical branch never matches and the demo falls back to warning/info
+# only. system_overview.md documents the rationale.
+DEFAULT_CRITICAL_SOURCES: frozenset[str] = frozenset({
+    "namenode-prod-3",
+    "datanode-pool-2",
+    "api-gateway-1",
+    "cache-redis-1",
+    "worker-svc-7",
+})
+
+CRITICAL_SOURCES_ENV = "LOGGUARD_CRITICAL_SOURCES"
+
+
+def get_critical_sources() -> frozenset[str]:
+    """Resolve the critical-source set from env, falling back to the demo
+    default. Comma-separated. Whitespace around each entry is stripped.
+    Empty / unset env var → fall back to default (empty string explicitly
+    reads as "use defaults" rather than "no critical sources at all" —
+    that footgun would silently disable critical alerting)."""
+    raw = os.environ.get(CRITICAL_SOURCES_ENV, "").strip()
+    if not raw:
+        return DEFAULT_CRITICAL_SOURCES
+    parsed = frozenset(s.strip() for s in raw.split(",") if s.strip())
+    return parsed if parsed else DEFAULT_CRITICAL_SOURCES
+
 
 # -- Severity scoring -------------------------------------------------------
 
@@ -56,14 +90,18 @@ def decide_severity(
     detection: DetectionResult,
     source: str,
     *,
-    critical_sources: frozenset[str] = frozenset(),
+    critical_sources: frozenset[str] | None = None,
 ) -> Severity:
     """Map detector output → one of "critical" / "warning" / "info".
 
     `critical_sources` is the set of host/service names that count as
-    critical infrastructure. Empty by default; the runner wires in
-    whatever the operator has configured (env var, config file).
+    critical infrastructure. When `None`, falls back to the env-driven
+    default via `get_critical_sources()` so production deployments never
+    silently lose the critical tier. Tests pass an explicit `frozenset()`
+    to exercise the no-critical-sources branch.
     """
+    if critical_sources is None:
+        critical_sources = get_critical_sources()
     if (
         detection.transformer_prob > CRITICAL_FAILURE_PROB
         and source in critical_sources
