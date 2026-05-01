@@ -6,11 +6,15 @@ import { cn } from "../lib/cn";
  * /admin/training — model training run history.
  *
  * Top section: the active run (the version actually loaded into
- * detection right now). Below it: a chronological list of past runs,
- * each tagged active / archived / failed.
+ * detection right now). Below it: a chronological list of past runs.
+ * Numbers come straight from `training/RESULTS.md`.
  *
- * Numbers come straight from the user's `training/RESULTS.md` — when
- * runs become a real DB table, swap for a `useTrainingRuns()` query.
+ * Persistence model: each `run_full_pipeline.py` invocation overwrites
+ * `backend/artifacts/{transformer,autoencoder,confidence_scorer}.pt`
+ * along with `thresholds.json` and `RESULTS.md`. The artifacts dir is
+ * a Docker volume (gitignored) — no formal archive system yet, so
+ * "previous runs" here are reconstructed from RESULTS.md history,
+ * not loaded from a runs table.
  */
 
 interface TrainingRun {
@@ -21,14 +25,14 @@ interface TrainingRun {
   anomaly_rate: number;
   models: { name: string; f1: number }[];
   ensemble_f1: number;
-  status: "active" | "archived" | "failed";
+  status: "active" | "failed";
   note?: string;
 }
 
 const RUNS: TrainingRun[] = [
   {
-    id: "run_2026_04_30_0819",
-    trained_at: "2026-04-30T08:19:00Z",
+    id: "run_2026_05_01_0819",
+    trained_at: "2026-05-01T08:19:00Z",
     dataset: "OpenStack",
     windows: 207_820,
     anomaly_rate: 0.089,
@@ -42,8 +46,8 @@ const RUNS: TrainingRun[] = [
     note: "pos_weight fix landed — class imbalance no longer collapses BCE.",
   },
   {
-    id: "run_2026_04_30_0641",
-    trained_at: "2026-04-30T06:41:00Z",
+    id: "run_2026_05_01_0641",
+    trained_at: "2026-05-01T06:41:00Z",
     dataset: "OpenStack",
     windows: 207_820,
     anomaly_rate: 0.089,
@@ -55,20 +59,6 @@ const RUNS: TrainingRun[] = [
     ensemble_f1: 0.0,
     status: "failed",
     note: "BCE collapsed — model predicted all-negative on 8.9%-positive data.",
-  },
-  {
-    id: "run_2026_04_29_1400",
-    trained_at: "2026-04-29T14:00:00Z",
-    dataset: "HDFS",
-    windows: 152_344,
-    anomaly_rate: 0.029,
-    models: [
-      { name: "Transformer", f1: 0.94 },
-      { name: "AutoEncoder", f1: 0.91 },
-      { name: "ConfidenceMLP", f1: 0.93 },
-    ],
-    ensemble_f1: 0.94,
-    status: "archived",
   },
 ];
 
@@ -160,6 +150,13 @@ export function Training() {
         <h2 className="mb-[14px] text-[13px] font-medium text-primary">
           Run history
         </h2>
+        <p className="mb-3 max-w-2xl text-[12px] leading-relaxed text-tertiary">
+          Each pipeline run overwrites the artifacts in{" "}
+          <span className="font-mono text-secondary">backend/artifacts/</span>{" "}
+          (a Docker volume, gitignored). Older runs aren't archived to disk —
+          this list is reconstructed from{" "}
+          <span className="font-mono text-secondary">RESULTS.md</span>.
+        </p>
         <div className="overflow-hidden rounded-lg border-[0.5px] border-border-subtle bg-card">
           <div className="grid grid-cols-[180px_88px_120px_100px_88px_1fr] items-center gap-4 border-b-[0.5px] border-border-subtle px-4 py-2.5 text-[10px] uppercase tracking-wider text-tertiary">
             <div>Trained</div>
@@ -238,17 +235,10 @@ function RunStatusPill({ status }: { status: TrainingRun["status"] }) {
       </span>
     );
   }
-  if (status === "failed") {
-    return (
-      <span className="inline-flex items-center gap-1 rounded-md border-[0.5px] border-critical/40 bg-critical/10 px-2 py-0.5 text-[10px] uppercase tracking-wider text-critical">
-        <XCircle size={10} strokeWidth={1.75} />
-        failed
-      </span>
-    );
-  }
   return (
-    <span className="inline-flex items-center gap-1 rounded-md border-[0.5px] border-border-subtle bg-page px-2 py-0.5 text-[10px] uppercase tracking-wider text-tertiary">
-      archived
+    <span className="inline-flex items-center gap-1 rounded-md border-[0.5px] border-critical/40 bg-critical/10 px-2 py-0.5 text-[10px] uppercase tracking-wider text-critical">
+      <XCircle size={10} strokeWidth={1.75} />
+      failed
     </span>
   );
 }
