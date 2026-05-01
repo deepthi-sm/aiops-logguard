@@ -1,13 +1,29 @@
-/**
- * Step 1 deliverable per docs/architecture/frontend_design.md "Build order":
- *
- *   "Vite + React + TS + Tailwind + the design tokens in index.css.
- *    npm run dev works, page is blank but fonts load and the dark
- *    page-bg is visible."
- *
- * Intentionally minimal — no Layout, no Sidebar, no routes. Step 2 swaps
- * this for the real shell.
- */
+import { BrowserRouter, Route, Routes } from "react-router-dom";
+import { Layout } from "./components/Layout";
+import { AnomalyDetail } from "./pages/AnomalyDetail";
+import { AnomalyList } from "./pages/AnomalyList";
+import { Dashboard } from "./pages/Dashboard";
+import { Feedback } from "./pages/Feedback";
+import { Incidents } from "./pages/Incidents";
+import { Settings } from "./pages/Settings";
+import { System } from "./pages/System";
+import { Training } from "./pages/Training";
+
 export default function App() {
-  return <div className="min-h-screen bg-page" />;
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route element={<Layout />}>
+          <Route path="/" element={<Dashboard />} />
+          <Route path="/anomalies" element={<AnomalyList />} />
+          <Route path="/anomalies/:id" element={<AnomalyDetail />} />
+          <Route path="/system" element={<System />} />
+          <Route path="/feedback" element={<Feedback />} />
+          <Route path="/training" element={<Training />} />
+          <Route path="/incidents" element={<Incidents />} />
+          <Route path="/settings" element={<Settings />} />
+        </Route>
+      </Routes>
+    </BrowserRouter>
+  );
 }
