@@ -1,4 +1,5 @@
 import type { ContributingLine } from "../types";
+import { LogLine } from "./LogLine";
 
 /**
  * Coral-shaded attention heatmap — the explainability story made visible.
@@ -39,9 +40,10 @@ export function AttentionLines({ lines }: { lines: ContributingLine[] }) {
                 }}
                 className="flex items-start gap-3 rounded px-3.5 py-2 font-mono text-[11px]"
               >
-                <span className="min-w-0 flex-1 break-all text-primary">
-                  {l.line}
-                </span>
+                <LogLine
+                  line={l.line}
+                  className="min-w-0 flex-1 break-all text-primary"
+                />
                 <span className="shrink-0 font-mono tabular-nums text-tertiary">
                   {l.attention.toFixed(2)}
                 </span>

@@ -2,6 +2,7 @@ import { ChevronRight } from "lucide-react";
 import { useState } from "react";
 import { cn } from "../lib/cn";
 import type { ContributingLine } from "../types";
+import { LogLine } from "./LogLine";
 
 /**
  * Collapsible "Full sequence (20 events)" block. Closed by default to keep
@@ -61,7 +62,7 @@ export function SequencePreview({
                 <span className="w-6 shrink-0 text-right tabular-nums text-tertiary">
                   {i + 1}
                 </span>
-                <span className="break-all text-primary">{line}</span>
+                <LogLine line={line} className="break-all text-primary" />
               </div>
             );
           })}
