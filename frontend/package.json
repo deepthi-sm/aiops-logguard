@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc --noEmit && vite build",
     "lint": "tsc --noEmit",
     "preview": "vite preview",
     "generate-types": "openapi-typescript http://localhost:8000/openapi.json -o src/api/generated.ts"
