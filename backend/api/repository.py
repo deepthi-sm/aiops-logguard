@@ -162,6 +162,17 @@ async def get_anomaly(pool: asyncpg.Pool, anomaly_id: str) -> Anomaly | None:
     return hydrate_anomaly(row) if row is not None else None
 
 
+async def get_newest_anomaly(pool: asyncpg.Pool) -> Anomaly | None:
+    """Most recently detected anomaly. Used by the WS handler as the
+    initial frame so a freshly-connected dashboard has something to
+    render before the next live detection arrives."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM anomalies ORDER BY detected_at DESC LIMIT 1"
+        )
+    return hydrate_anomaly(row) if row is not None else None
+
+
 async def get_explanation(
     pool: asyncpg.Pool,
     anomaly_id: str,
