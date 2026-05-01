@@ -3,6 +3,7 @@ import { cn } from "../lib/cn";
 import { formatRelativeTime, formatScore } from "../lib/format";
 import { severityBgClassName, severityClassName } from "../lib/severity";
 import type { Anomaly } from "../types";
+import { LogLine } from "./LogLine";
 
 /**
  * One row in the dashboard's "Recent activity" feed. Per spec:
@@ -29,9 +30,10 @@ export function AnomalyFeedRow({ anomaly }: { anomaly: Anomaly }) {
       />
 
       <div className="min-w-0 flex-1">
-        <div className="truncate text-[13px] text-primary">
-          {anomaly.log_template}
-        </div>
+        <LogLine
+          line={anomaly.log_template}
+          className="block truncate text-[13px] text-primary"
+        />
         <div className="mt-1 flex items-center gap-2 font-mono text-[11px] text-tertiary">
           <span className="truncate">{anomaly.source}</span>
           <span aria-hidden>·</span>

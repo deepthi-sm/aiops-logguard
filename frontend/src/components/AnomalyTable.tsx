@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 import { cn } from "../lib/cn";
 import { formatNumber, formatRelativeTime, formatScore } from "../lib/format";
 import type { Anomaly } from "../types";
+import { LogLine } from "./LogLine";
 import { SeverityPill } from "./SeverityPill";
 
 interface AnomalyTableProps {
@@ -56,9 +57,10 @@ export function AnomalyTable({ items, showClusterAffordance = true }: AnomalyTab
             <div className="truncate font-mono text-[12px] text-secondary">
               {a.source}
             </div>
-            <div className="truncate font-mono text-[12px] text-primary">
-              {a.log_template}
-            </div>
+            <LogLine
+              line={a.log_template}
+              className="truncate font-mono text-[12px] text-primary"
+            />
             <div
               className={cn(
                 "text-right font-mono text-[12px] tabular-nums",
