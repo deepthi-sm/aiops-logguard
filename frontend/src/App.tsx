@@ -1,3 +1,4 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { Layout } from "./components/Layout";
 import { AnomalyDetail } from "./pages/AnomalyDetail";
@@ -9,21 +10,35 @@ import { Settings } from "./pages/Settings";
 import { System } from "./pages/System";
 import { Training } from "./pages/Training";
 
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      // 5s stale time so opening a detail panel immediately after a list
+      // refresh doesn't refetch the same data.
+      staleTime: 5_000,
+      retry: 1,
+      refetchOnWindowFocus: false,
+    },
+  },
+});
+
 export default function App() {
   return (
-    <BrowserRouter>
-      <Routes>
-        <Route element={<Layout />}>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/anomalies" element={<AnomalyList />} />
-          <Route path="/anomalies/:id" element={<AnomalyDetail />} />
-          <Route path="/system" element={<System />} />
-          <Route path="/feedback" element={<Feedback />} />
-          <Route path="/training" element={<Training />} />
-          <Route path="/incidents" element={<Incidents />} />
-          <Route path="/settings" element={<Settings />} />
-        </Route>
-      </Routes>
-    </BrowserRouter>
+    <QueryClientProvider client={queryClient}>
+      <BrowserRouter>
+        <Routes>
+          <Route element={<Layout />}>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/anomalies" element={<AnomalyList />} />
+            <Route path="/anomalies/:id" element={<AnomalyDetail />} />
+            <Route path="/system" element={<System />} />
+            <Route path="/feedback" element={<Feedback />} />
+            <Route path="/training" element={<Training />} />
+            <Route path="/incidents" element={<Incidents />} />
+            <Route path="/settings" element={<Settings />} />
+          </Route>
+        </Routes>
+      </BrowserRouter>
+    </QueryClientProvider>
   );
 }
