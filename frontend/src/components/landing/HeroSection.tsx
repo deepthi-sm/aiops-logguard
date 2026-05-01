@@ -23,26 +23,10 @@ export function HeroSection() {
       id="overview"
       className="mx-auto max-w-[1100px] px-[56px] pb-[80px] pt-[100px]"
     >
-      {/* Pill */}
-      <motion.div {...fadeUp(0.1, 8)}>
-        <span
-          className="inline-flex items-center gap-2 rounded-full px-3.5 py-1.5"
-          style={{
-            background: "rgba(167, 139, 250, 0.1)",
-            border: "0.5px solid rgba(167, 139, 250, 0.3)",
-          }}
-        >
-          <span className="h-1.5 w-1.5 rounded-full bg-iris" />
-          <span className="text-[11px] uppercase tracking-[0.08em] text-iris">
-            Research project · 2026
-          </span>
-        </span>
-      </motion.div>
-
-      {/* Headline */}
+      {/* Headline (now the topmost element — pill removed) */}
       <motion.h1
-        {...fadeUp(0.2)}
-        className="mt-6 max-w-[850px] font-display text-[64px] font-medium leading-[1.05] tracking-[-0.03em] text-primary"
+        {...fadeUp(0.1)}
+        className="max-w-[850px] font-display text-[64px] font-medium leading-[1.05] tracking-[-0.03em] text-primary"
       >
         AI that finds <span className="text-iris">what your alerts</span> miss.
       </motion.h1>
@@ -83,33 +67,39 @@ export function HeroSection() {
 function DashboardPreview() {
   return (
     <div
-      className="rounded-xl p-[18px]"
+      className="rounded-xl p-[24px]"
       style={{
         background: "#0d0d10",
         border: "0.5px solid #1f1f1f",
         boxShadow: "0 0 80px rgba(167, 139, 250, 0.04)",
+        minHeight: 480,
       }}
     >
       {/* mac-style window dots */}
-      <div className="flex gap-1.5 pb-3">
+      <div className="flex gap-1.5 pb-4">
         <span className="h-2.5 w-2.5 rounded-full bg-card" />
         <span className="h-2.5 w-2.5 rounded-full bg-card" />
         <span className="h-2.5 w-2.5 rounded-full bg-card" />
       </div>
 
-      <div className="grid grid-cols-[140px_1fr] gap-3">
+      <div className="grid grid-cols-[220px_1fr] gap-5">
         {/* sidebar */}
-        <div className="rounded-md border-[0.5px] border-border-subtle bg-sidebar p-3">
-          <div className="mb-3 flex items-center gap-1.5 text-iris">
-            <Logo size={12} />
-            <span className="text-[10px] font-medium text-primary">
+        <div className="rounded-md border-[0.5px] border-border-subtle bg-sidebar p-4">
+          <div className="mb-4 flex items-center gap-2 text-iris">
+            <Logo size={14} />
+            <span className="text-[12px] font-medium text-primary">
               LogGuard
             </span>
           </div>
-          {["Dashboard", "Anomalies", "System", "Settings"].map((label) => (
+          {["Dashboard", "Anomalies", "System", "Settings"].map((label, i) => (
             <div
               key={label}
-              className="px-1 py-1 text-[10px] text-tertiary"
+              className={
+                "rounded-sm px-2 py-1.5 text-[12px] " +
+                (i === 0
+                  ? "bg-card text-primary"
+                  : "text-tertiary")
+              }
             >
               {label}
             </div>
@@ -117,7 +107,7 @@ function DashboardPreview() {
         </div>
 
         {/* main */}
-        <div className="space-y-3">
+        <div className="space-y-4">
           {/* KPIs */}
           <div className="grid grid-cols-3 gap-3">
             {[
@@ -127,47 +117,63 @@ function DashboardPreview() {
             ].map((k) => (
               <div
                 key={k.l}
-                className="rounded-md border-[0.5px] border-border-subtle bg-card p-2"
+                className="rounded-md border-[0.5px] border-border-subtle bg-card px-3 py-3"
               >
-                <div className="font-mono text-[14px] text-primary">{k.v}</div>
-                <div className="text-[9px] uppercase tracking-wider text-tertiary">
+                <div className="text-[10px] uppercase tracking-wider text-tertiary">
                   {k.l}
+                </div>
+                <div className="mt-1 font-mono text-[28px] leading-none text-primary">
+                  {k.v}
                 </div>
               </div>
             ))}
           </div>
 
-          {/* tiny chart */}
-          <div className="flex h-12 items-end gap-1 rounded-md border-[0.5px] border-border-subtle bg-card px-2 py-1.5">
-            {[3, 6, 4, 8, 5, 9, 6, 7, 4, 6, 8, 5, 7, 9, 6].map((h, i) => (
-              <span
-                key={i}
-                className="flex-1 rounded-sm"
-                style={{
-                  height: `${h * 8}%`,
-                  background:
-                    i % 5 === 0
-                      ? "var(--severity-critical)"
-                      : i % 3 === 0
-                      ? "var(--severity-warning)"
-                      : "var(--severity-info)",
-                }}
-              />
-            ))}
+          {/* timeline chart — taller, more breathing room */}
+          <div
+            className="flex items-end gap-1 rounded-md border-[0.5px] border-border-subtle bg-card px-3 py-2"
+            style={{ height: 90 }}
+          >
+            {[3, 6, 4, 8, 5, 9, 6, 7, 4, 6, 8, 5, 7, 9, 6, 4, 7, 5, 8, 6].map(
+              (h, i) => (
+                <span
+                  key={i}
+                  className="flex-1 rounded-sm"
+                  style={{
+                    height: `${h * 9}%`,
+                    background:
+                      i % 5 === 0
+                        ? "var(--severity-critical)"
+                        : i % 3 === 0
+                        ? "var(--severity-warning)"
+                        : "var(--severity-info)",
+                  }}
+                />
+              ),
+            )}
           </div>
 
           {/* feed rows */}
-          <div className="space-y-1">
+          <div className="divide-y-[0.5px] divide-border-subtle rounded-md border-[0.5px] border-border-subtle bg-card">
             {[
-              { lvl: "critical", text: "ERROR keystone-api auth failed" },
-              { lvl: "warning", text: "WARN rate limit exceeded 10.0.1.50" },
+              {
+                lvl: "critical",
+                title: "ERROR keystone-api auth failed",
+                meta: "nova-api-prod-3 · 2 min ago",
+              },
+              {
+                lvl: "warning",
+                title: "WARN rate limit exceeded 10.0.1.50",
+                meta: "nova-api-prod-2 · 5 min ago",
+              },
             ].map((r) => (
               <div
-                key={r.text}
-                className="flex items-center gap-2 rounded-md border-[0.5px] border-border-subtle bg-card px-2 py-1.5"
+                key={r.title}
+                className="flex items-start gap-3 px-3"
+                style={{ paddingTop: 14, paddingBottom: 14 }}
               >
                 <span
-                  className="h-1.5 w-1.5 rounded-full"
+                  className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full"
                   style={{
                     background:
                       r.lvl === "critical"
@@ -175,9 +181,14 @@ function DashboardPreview() {
                         : "var(--severity-warning)",
                   }}
                 />
-                <span className="truncate font-mono text-[10px] text-secondary">
-                  {r.text}
-                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="truncate font-mono text-[13px] text-primary">
+                    {r.title}
+                  </div>
+                  <div className="mt-0.5 truncate font-mono text-[11px] text-tertiary">
+                    {r.meta}
+                  </div>
+                </div>
               </div>
             ))}
           </div>
