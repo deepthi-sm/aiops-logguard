@@ -14,9 +14,13 @@ scipy==1.14.1
 scikit-learn==1.5.2
 faiss-cpu==1.9.0
 
+# Step 4 — live ingestion (Redis stream consumer + Drain3 inference).
+redis==5.2.0
+
 # Tooling — run by CI (.github/workflows/ci.yml)
 ruff==0.7.2
 mypy==1.13.0
 pytest==8.3.3
 pytest-asyncio==0.24.0
 httpx==0.27.2
+fakeredis==2.26.1
