@@ -27,7 +27,10 @@ export function AnimatedSection({
   id,
   className,
 }: Props) {
-  const { ref, inView } = useInView({ threshold: 0.15, triggerOnce: true });
+  // 0.3 — animation triggers when 30% of the section is in view, so it
+  // feels like it fires when you've actually arrived rather than ahead
+  // of the scroll.
+  const { ref, inView } = useInView({ threshold: 0.3, triggerOnce: true });
   const reducedMotion = useReducedMotion();
 
   const initial = reducedMotion
@@ -45,7 +48,7 @@ export function AnimatedSection({
       className={className}
       initial={initial}
       animate={inView ? { opacity: 1, x: 0, y: 0 } : initial}
-      transition={{ duration: 0.6, ease: EASE_OUT_CUBIC, delay }}
+      transition={{ duration: 0.8, ease: EASE_OUT_CUBIC, delay }}
     >
       {children}
     </motion.section>
