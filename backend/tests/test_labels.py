@@ -1,10 +1,15 @@
 """
-Tests for training/labels.py — OpenStack-style anomaly label loading and
-window labelling.
+Tests for training/labels.py — OpenStack-style and HDFS-style anomaly
+label loading, plus the window labelling that uses the resulting flagged
+sets.
 """
 from pathlib import Path
 
-from training.labels import load_openstack_labels, make_window_labeler
+from training.labels import (
+    load_hdfs_labels,
+    load_openstack_labels,
+    make_window_labeler,
+)
 from training.sequence_builder import ParsedLog
 
 
@@ -135,6 +140,57 @@ class TestMakeWindowLabeler:
         # First 8 chars of the UUID, but truncated — shouldn't match
         events = _events("INFO short id f8b27f15 here")
         assert fn(events) == "normal"
+
+
+# -- load_hdfs_labels -------------------------------------------------------
+
+class TestLoadHdfsLabels:
+    def test_parses_hdfs_csv_format(self, tmp_path: Path):
+        f = tmp_path / "anomaly_label.csv"
+        f.write_text(
+            "BlockId,Label\n"
+            "blk_-1608999687919862906,Normal\n"
+            "blk_7503483334202473044,Anomaly\n"
+            "blk_-3544583377289625738,Anomaly\n",
+            encoding="utf-8",
+        )
+        flagged = load_hdfs_labels(f)
+        assert flagged == {
+            "blk_7503483334202473044",
+            "blk_-3544583377289625738",
+        }
+
+    def test_label_match_is_case_insensitive(self, tmp_path: Path):
+        """LogHub variants sometimes write 'anomaly' lowercase."""
+        f = tmp_path / "labels.csv"
+        f.write_text(
+            "BlockId,Label\n"
+            "blk_111,anomaly\n"
+            "blk_222,ANOMALY\n"
+            "blk_333,Normal\n",
+            encoding="utf-8",
+        )
+        assert load_hdfs_labels(f) == {"blk_111", "blk_222"}
+
+    def test_empty_file_returns_empty_set(self, tmp_path: Path):
+        f = tmp_path / "labels.csv"
+        f.write_text("BlockId,Label\n", encoding="utf-8")
+        assert load_hdfs_labels(f) == set()
+
+    def test_block_ids_drive_substring_window_labeller(self, tmp_path: Path):
+        """End-to-end: HDFS labels → make_window_labeler → window labelling
+        on lines that mention the flagged block."""
+        f = tmp_path / "labels.csv"
+        f.write_text(
+            "BlockId,Label\nblk_-1234567890,Anomaly\n", encoding="utf-8",
+        )
+        flagged = load_hdfs_labels(f)
+        fn = make_window_labeler(flagged)
+        events = _events(
+            "INFO blk_-1234567890 receiving block from /10.0.1.42",
+            "WARN blk_-1234567890 slow read from /10.0.1.42",
+        )
+        assert fn(events) == "anomaly"
 
 
 # -- end-to-end with build_windows ------------------------------------------

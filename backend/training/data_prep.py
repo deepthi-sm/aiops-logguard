@@ -70,6 +70,18 @@ DATASETS: dict[str, dict] = {
         # error/warn lines are treated as the positive class downstream.
         "label_file": None,
     },
+    "hdfs": {
+        # HDFS_1 is the labelled v1 release (~162 MB compressed,
+        # ~1.5 GB raw HDFS.log + anomaly_label.csv inside). Used for
+        # cross-dataset evaluation and combined-training experiments.
+        "archive": "HDFS_1.tar.gz",
+        "extract_to": "hdfs",
+        "log_files": ["HDFS.log"],
+        # HDFS labels are CSV (`BlockId,Label`), not the OpenStack-style
+        # newline-delimited file. `training.labels.load_hdfs_labels`
+        # handles the conversion.
+        "label_file": "anomaly_label.csv",
+    },
 }
 
 
