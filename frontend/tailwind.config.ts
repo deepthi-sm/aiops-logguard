@@ -6,6 +6,18 @@ import type { Config } from "tailwindcss";
 export default {
   darkMode: ["class", '[data-theme="dark"]'],
   content: ["./index.html", "./src/**/*.{ts,tsx}"],
+  // Safelist severity classes — they're constructed at runtime from the
+  // `severity` field of an anomaly, so Tailwind's content scanner needs
+  // help to keep them in the bundle. Without this, `bg-info` / `text-info`
+  // can get tree-shaken if no static reference exists.
+  safelist: [
+    "bg-critical", "bg-warning", "bg-info", "bg-success",
+    "text-critical", "text-warning", "text-info", "text-success",
+    "bg-critical/10", "bg-warning/10", "bg-info/10", "bg-success/10",
+    "border-critical", "border-warning", "border-info", "border-success",
+    "border-critical/30", "border-warning/30", "border-info/30",
+    "border-critical/40", "border-warning/40", "border-info/40",
+  ],
   theme: {
     extend: {
       colors: {
