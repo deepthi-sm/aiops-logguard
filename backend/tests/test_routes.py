@@ -1,17 +1,21 @@
 """
 End-to-end shape tests for every REST endpoint in the contract.
 
-Each test calls through TestClient → FastAPI → handler → mock_data, then
-validates the response against the same Pydantic model the handler declares.
-Catches drift between the schema, the handler, and the fixtures in one shot.
+Each test calls through TestClient → FastAPI handler → asyncpg pool →
+seeded test database, then validates the response against the same
+Pydantic model the handler declares. The `client` fixture comes from
+`tests/conftest.py` and arrives with the canonical mock fixtures
+already inserted, so the existing assertions still hold against the
+real SQL path.
+
+Tests in this file require Postgres; the conftest skips them cleanly
+when `LOGGUARD_DB_URL` isn't set (CI sets it, see ci.yml).
 """
 import re
 
 import pytest
-from fastapi.testclient import TestClient
 
 from api import mock_data
-from api.main import app
 from api.schemas import (
     Anomaly,
     AnomalyListResponse,
@@ -21,13 +25,6 @@ from api.schemas import (
     MetricsSummary,
     TimelineResponse,
 )
-
-
-@pytest.fixture
-def client():
-    with TestClient(app) as c:
-        yield c
-
 
 # ---------- GET /anomalies (list) ----------
 
