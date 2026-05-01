@@ -46,6 +46,12 @@ class TrainConfig:
     early_stop_patience: int = 5
     val_split: float = 0.2
     seed: int = 42
+    # Class-weighted BCE — counters the trivial-classifier collapse that BCE
+    # falls into on imbalanced data. Auto-computed from the train split as
+    # `n_negatives / n_positives` and capped at 100. Disable for experiments
+    # where you want vanilla BCE behaviour.
+    use_pos_weight: bool = True
+    pos_weight_cap: float = 100.0
 
 
 # -- Loss ------------------------------------------------------------------
@@ -55,6 +61,8 @@ def _two_headed_loss(
     anomaly_targets: torch.Tensor,        # (B,) float in {0, 1}
     failure_targets: torch.Tensor | None,  # (B,) minutes-to-failure
     failure_mask: torch.Tensor | None,     # (B,) bool — True where failure_targets is meaningful
+    *,
+    pos_weight: torch.Tensor | None = None,  # (1,) scalar — multiplies positive-class loss
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Returns (total_loss, bce_component, mse_component).
 
@@ -62,9 +70,16 @@ def _two_headed_loss(
     labels) trains only the anomaly head. The mse component is reported as
     zero in that case but the head still runs forward — it just doesn't
     receive gradient.
+
+    `pos_weight` is multiplied into the positive class's BCE loss. With
+    realistic class imbalance (~9% positives on full OpenStack) vanilla BCE
+    converges to "predict 0 for everything" — non-zero pos_weight reweights
+    the loss so positives matter proportionally to their rarity.
     """
     anomaly_logit = outputs["anomaly_logit"].squeeze(-1)
-    bce = F.binary_cross_entropy_with_logits(anomaly_logit, anomaly_targets)
+    bce = F.binary_cross_entropy_with_logits(
+        anomaly_logit, anomaly_targets, pos_weight=pos_weight,
+    )
 
     if failure_targets is not None and failure_mask is not None and failure_mask.any():
         failure_pred = outputs["failure_minutes"].squeeze(-1)
@@ -158,6 +173,23 @@ def train(
         drop_last=False,
     )
 
+    # Compute per-batch pos_weight once from the train split. Cap to prevent
+    # extreme values on tiny minorities (e.g. 0.1% positives → cap at 100 so
+    # gradients stay numerically sane).
+    pos_weight: torch.Tensor | None = None
+    if config.use_pos_weight:
+        n_pos_train = int((y_train == 1).sum().item())
+        n_neg_train = int((y_train == 0).sum().item())
+        if n_pos_train > 0 and n_neg_train > 0:
+            raw_pw = n_neg_train / n_pos_train
+            pw_value = min(raw_pw, config.pos_weight_cap)
+            pos_weight = torch.tensor([pw_value], device=device)
+            if verbose:
+                print(
+                    f"[pos_weight] n_pos={n_pos_train:,} n_neg={n_neg_train:,} "
+                    f"→ pos_weight={pw_value:.2f}"
+                )
+
     model = LogTransformer().to(device)
     optimiser = torch.optim.AdamW(model.parameters(), lr=config.lr, weight_decay=config.weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimiser, T_max=config.epochs)
@@ -182,7 +214,7 @@ def train(
 
             optimiser.zero_grad()
             out = model(xb)
-            loss, bce, mse = _two_headed_loss(out, yb, fb, mb)
+            loss, bce, mse = _two_headed_loss(out, yb, fb, mb, pos_weight=pos_weight)
             loss.backward()
             optimiser.step()
 
