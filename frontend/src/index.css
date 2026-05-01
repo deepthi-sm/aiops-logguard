@@ -21,8 +21,8 @@
 
   /* Severity (dark mode) */
   --severity-critical: #fb7185;
-  --severity-warning: #fbbf24;
-  --severity-info: #67e8f9;
+  --severity-warning: #fdba74;   /* peach */
+  --severity-info: #93c5fd;      /* sky */
   --severity-success: #34d399;
 
   /* Surfaces */

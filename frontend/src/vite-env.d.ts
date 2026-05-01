@@ -12,6 +12,15 @@ interface ImportMetaEnv {
   /** "true" | "false" | undefined. See `src/api/client.ts` for the
    *  default behaviour (mock mode unless explicitly disabled). */
   readonly VITE_USE_MOCK?: string;
+
+  // Firebase config (one var per Firebase SDK option). Values come from
+  // the Firebase Console → Project settings → General → Your apps.
+  readonly VITE_FIREBASE_API_KEY?: string;
+  readonly VITE_FIREBASE_AUTH_DOMAIN?: string;
+  readonly VITE_FIREBASE_PROJECT_ID?: string;
+  readonly VITE_FIREBASE_STORAGE_BUCKET?: string;
+  readonly VITE_FIREBASE_MESSAGING_SENDER_ID?: string;
+  readonly VITE_FIREBASE_APP_ID?: string;
 }
 
 interface ImportMeta {

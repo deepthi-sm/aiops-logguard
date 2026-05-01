@@ -1,12 +1,17 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { Layout } from "./components/Layout";
+import { ProtectedRoute } from "./components/ProtectedRoute";
+import { PublicOnlyRoute } from "./components/PublicOnlyRoute";
 import { AnomalyDetail } from "./pages/AnomalyDetail";
 import { AnomalyList } from "./pages/AnomalyList";
 import { Dashboard } from "./pages/Dashboard";
 import { Feedback } from "./pages/Feedback";
 import { Incidents } from "./pages/Incidents";
+import { Landing } from "./pages/Landing";
+import { Login } from "./pages/Login";
 import { Settings } from "./pages/Settings";
+import { Signup } from "./pages/Signup";
 import { System } from "./pages/System";
 import { Training } from "./pages/Training";
 
@@ -27,14 +32,38 @@ export default function App() {
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
         <Routes>
-          <Route element={<Layout />}>
-            {/* User-facing routes */}
-            <Route path="/" element={<Dashboard />} />
+          {/* Public routes — no Layout, no auth required */}
+          <Route path="/" element={<Landing />} />
+          <Route
+            path="/login"
+            element={
+              <PublicOnlyRoute>
+                <Login />
+              </PublicOnlyRoute>
+            }
+          />
+          <Route
+            path="/signup"
+            element={
+              <PublicOnlyRoute>
+                <Signup />
+              </PublicOnlyRoute>
+            }
+          />
+
+          {/* Protected dashboard routes — Layout (sidebar) wraps these */}
+          <Route
+            element={
+              <ProtectedRoute>
+                <Layout />
+              </ProtectedRoute>
+            }
+          >
+            <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/anomalies" element={<AnomalyList />} />
             <Route path="/anomalies/:id" element={<AnomalyDetail />} />
             <Route path="/feedback" element={<Feedback />} />
             <Route path="/settings" element={<Settings />} />
-            {/* Admin routes — operator / engineer-only views */}
             <Route path="/admin/system" element={<System />} />
             <Route path="/admin/training" element={<Training />} />
             <Route path="/admin/incidents" element={<Incidents />} />

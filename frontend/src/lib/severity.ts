@@ -74,9 +74,9 @@ function levelToRgb(level: string | null): [number, number, number] | null {
       return [251, 113, 133]; // --severity-critical (#fb7185)
     case "WARN":
     case "WARNING":
-      return [251, 191, 36];  // --severity-warning  (#fbbf24)
+      return [253, 186, 116]; // --severity-warning  (#fdba74 peach)
     case "INFO":
-      return [103, 232, 249]; // --severity-info     (#67e8f9)
+      return [147, 197, 253]; // --severity-info     (#93c5fd sky)
     case "DEBUG":
     case "TRACE":
       return [122, 122, 133]; // --text-tertiary muted gray
