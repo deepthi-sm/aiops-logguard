@@ -1,16 +1,9 @@
 name: CI
 
-# CI was broken from the start: the original workflow tried to `cd frontend`
-# in a job whose body referenced a directory that didn't exist, and a later
-# attempt to gate that job with `if: hashFiles('frontend/package.json') != ''`
-# at the JOB level was rejected by the parser ("Unrecognized function")
-# because hashFiles() runs before checkout — there are no files to hash. The
-# whole workflow file was failing YAML validation, so neither job ever ran.
-#
-# The frontend job is removed entirely until real frontend code lands. When
-# `frontend/package.json` is committed in a future PR, add a new `frontend:`
-# job here that gates correctly (step-level checks AFTER actions/checkout, or
-# a top-level workflow `paths:` trigger filter).
+# Two jobs: backend (Python) and frontend (Node/Vite). The frontend job
+# gates ITS STEPS on the existence of `frontend/package.json` rather than
+# the whole job — that pattern works (job-level `if: hashFiles(...)` does
+# not, because hashFiles runs before checkout and finds nothing).
 
 on:
   pull_request:
@@ -68,3 +61,36 @@ jobs:
         run: |
           cd backend
           pytest -v
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Detect frontend code
+        id: detect
+        shell: bash
+        run: |
+          if [ -f frontend/package.json ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-node@v4
+        if: steps.detect.outputs.exists == 'true'
+        with:
+          node-version: "20"
+      - name: Install dependencies
+        if: steps.detect.outputs.exists == 'true'
+        run: |
+          cd frontend
+          npm install --no-audit --no-fund
+      - name: Type check
+        if: steps.detect.outputs.exists == 'true'
+        run: |
+          cd frontend
+          npm run lint
+      - name: Build
+        if: steps.detect.outputs.exists == 'true'
+        run: |
+          cd frontend
+          npm run build
