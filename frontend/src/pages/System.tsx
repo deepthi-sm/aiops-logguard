@@ -5,7 +5,6 @@ import { EyebrowLabel } from "../components/EyebrowLabel";
 import {
   ServiceCard,
   type ServiceCardProps,
-  type ServiceStatus,
 } from "../components/ServiceCard";
 import { Skeleton } from "../components/Skeleton";
 import { cn } from "../lib/cn";
