@@ -159,6 +159,34 @@ class FeedbackHistoryResponse(BaseModel):
     false_positive: int = Field(ge=0)
 
 
+# ---------- Upload (POST /api/v1/upload) ----------
+
+UploadStatus = Literal["queued", "running", "completed", "failed"]
+
+
+class UploadJobResponse(BaseModel):
+    """Returned by POST /upload — the job is already streaming when this
+    response is sent. Frontend polls GET /upload/{job_id}/status for
+    progress."""
+    job_id: str
+    total_lines: int = Field(ge=0)
+    rate: int = Field(ge=1, le=1000)
+    status: UploadStatus
+
+
+class UploadStatusResponse(BaseModel):
+    job_id: str
+    status: UploadStatus
+    lines_streamed: int = Field(ge=0)
+    total_lines: int = Field(ge=0)
+    # Filled while running; null when the job hasn't started or has
+    # finished. Estimated from the actual achieved rate so far, not the
+    # configured rate, so backpressure on Redis surfaces honestly.
+    eta_seconds: int | None = None
+    # Truncated error string when status="failed". Null otherwise.
+    error: str | None = None
+
+
 # ---------- WebSocket message envelopes ----------
 # These aren't auto-included in openapi.json (FastAPI doesn't introspect WS),
 # but they document the WS contract so Person B has a single source of truth.

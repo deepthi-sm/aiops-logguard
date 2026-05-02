@@ -155,9 +155,15 @@ async def list_anomalies(
     offset: int,
     severity: Severity | None,
     since: datetime | None,
+    source: str | None = None,
 ) -> tuple[list[Anomaly], int]:
     """Return `(items, total_matching_count)` so the route can compute
-    the next pagination cursor without a second round-trip."""
+    the next pagination cursor without a second round-trip.
+
+    `source` is an exact-match filter on the `source` column. Used by
+    the upload flow to surface only anomalies derived from a specific
+    origin (e.g. `?source=user-upload`).
+    """
     where_clauses: list[str] = []
     args: list[Any] = []
     if severity is not None:
@@ -166,6 +172,9 @@ async def list_anomalies(
     if since is not None:
         args.append(since)
         where_clauses.append(f"detected_at > ${len(args)}")
+    if source is not None:
+        args.append(source)
+        where_clauses.append(f"source = ${len(args)}")
     where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
 
     count_sql = f"SELECT COUNT(*) FROM anomalies {where_sql}"

@@ -66,6 +66,17 @@ async def list_anomalies(
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     since: Annotated[datetime | None, Query()] = None,
     severity: Annotated[Severity | None, Query()] = None,
+    source: Annotated[
+        str | None,
+        Query(
+            min_length=1, max_length=128,
+            description=(
+                "Exact-match filter on the `source` column "
+                "(e.g. ?source=user-upload to surface only anomalies "
+                "derived from a user-uploaded log file)."
+            ),
+        ),
+    ] = None,
     cursor: Annotated[str | None, Query()] = None,
 ) -> AnomalyListResponse:
     offset = _decode_cursor(cursor)
@@ -79,6 +90,7 @@ async def list_anomalies(
         offset=offset,
         severity=severity,
         since=since_aware,
+        source=source,
     )
     next_offset = offset + len(items)
     next_cursor = _encode_cursor(next_offset) if next_offset < total else None

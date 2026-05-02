@@ -29,6 +29,7 @@ from api.migrations import apply_schema
 from api.repository import install_jsonb_codec
 from api.routes import router as rest_router
 from api.schemas import HealthResponse
+from api.upload import router as upload_router
 from api.ws import router as ws_router
 
 VERSION = os.environ.get("LOGGUARD_VERSION", "0.1.0")
@@ -74,6 +75,7 @@ app.add_middleware(
 )
 
 app.include_router(rest_router)
+app.include_router(upload_router)
 app.include_router(ws_router)
 
 

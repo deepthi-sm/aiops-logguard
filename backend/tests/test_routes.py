@@ -85,6 +85,22 @@ def test_list_anomalies_since_filter(client):
     assert all(it["detected_at"] > cutoff for it in items)
 
 
+def test_list_anomalies_source_filter(client):
+    """`?source=X` returns only anomalies whose source column equals X."""
+    target_source = mock_data.all_anomalies()[0].source
+    r = client.get(f"/api/v1/anomalies?source={target_source}")
+    assert r.status_code == 200
+    items = r.json()["items"]
+    assert len(items) >= 1
+    assert all(it["source"] == target_source for it in items)
+
+
+def test_list_anomalies_source_filter_unknown_returns_empty(client):
+    r = client.get("/api/v1/anomalies?source=user-upload-nothing-here")
+    assert r.status_code == 200
+    assert r.json()["items"] == []
+
+
 def test_list_anomalies_limit_bounds_enforced(client):
     assert client.get("/api/v1/anomalies?limit=0").status_code == 422
     assert client.get("/api/v1/anomalies?limit=201").status_code == 422
