@@ -12,6 +12,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { Link, NavLink, useNavigate } from "react-router-dom";
+import type { ConnectionStatus } from "../api/websocket";
 import { useAuth } from "../hooks/useAuth";
 import { cn } from "../lib/cn";
 import { Logo } from "./Logo";
@@ -21,10 +22,12 @@ import { ThemeToggle } from "./ThemeToggle";
  * Fixed 220px sidebar per spec.
  *
  *   ┌─────────────────────────┐
- *   │  ⬢ LogGuard             │  ← Logo
+ *   │  ⬢ LogGuard             │  ← Logo (clickable, /dashboard)
  *   │                         │
  *   │  ▢ Dashboard            │
  *   │  ▢ Anomalies        [3] │  ← user-facing routes
+ *   │  ▢ Upload               │
+ *   │  ▢ Connect              │
  *   │  ▢ Feedback             │
  *   │  ▢ Settings             │
  *   │  ─────────────────────  │  ← hairline divider
@@ -34,13 +37,43 @@ import { ThemeToggle } from "./ThemeToggle";
  *   │  ▢ Incidents            │
  *   │                         │
  *   │  ─────────────────────  │  ← hairline divider
- *   │  ● connected  0/s    ☀  │  ← live status + theme toggle
+ *   │  ● connected  3/s    ☀  │  ← live status + theme toggle
  *   └─────────────────────────┘
  *
- * The status pill is static for now (event rate "0/s", "connected"
- * label, animated dot via CSS). Step 9 wires it to the real WebSocket
- * connection state and rolling event rate.
+ * The bottom status pill is driven by the real WebSocket: dot colour
+ * tracks `wsStatus`, the "/s" number is the rolling 60 s anomaly rate.
+ * Both are owned by `<Layout>` (one singleton client) and passed down
+ * here via props.
  */
+
+interface SidebarProps {
+  wsStatus: ConnectionStatus;
+  eventsPerSecond: number;
+}
+
+const STATUS_LABEL: Record<ConnectionStatus, string> = {
+  connecting: "connecting",
+  connected: "connected",
+  reconnecting: "reconnecting",
+  disconnected: "offline",
+};
+
+/** Colour class for the dot. Uses the same severity tokens as the rest
+ * of the dashboard so it follows the theme. `success` = green, `warning`
+ * = amber, `critical` = red. */
+const STATUS_DOT: Record<ConnectionStatus, string> = {
+  connected: "bg-success",
+  connecting: "bg-warning",
+  reconnecting: "bg-warning",
+  disconnected: "bg-critical",
+};
+
+function formatRate(rate: number): string {
+  if (rate <= 0) return "0/s";
+  if (rate < 1) return `${rate.toFixed(2)}/s`;
+  if (rate < 10) return `${rate.toFixed(1)}/s`;
+  return `${Math.round(rate)}/s`;
+}
 
 interface NavItem {
   to: string;
@@ -85,9 +118,11 @@ function NavItemLink({ item }: { item: NavItem }) {
   );
 }
 
-export function Sidebar() {
+export function Sidebar({ wsStatus, eventsPerSecond }: SidebarProps) {
   const { signOut, user } = useAuth();
   const navigate = useNavigate();
+  const dotClass = STATUS_DOT[wsStatus];
+  const showPulse = wsStatus === "connected";
 
   async function handleSignOut() {
     await signOut();
@@ -139,11 +174,25 @@ export function Sidebar() {
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2 px-2.5 py-1.5 text-[11px] text-secondary">
             <span className="relative inline-flex h-1.5 w-1.5">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-50" />
-              <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-success" />
+              {showPulse && (
+                <span
+                  className={cn(
+                    "absolute inline-flex h-full w-full animate-ping rounded-full opacity-50",
+                    dotClass,
+                  )}
+                />
+              )}
+              <span
+                className={cn(
+                  "relative inline-flex h-1.5 w-1.5 rounded-full",
+                  dotClass,
+                )}
+              />
             </span>
-            <span>connected</span>
-            <span className="font-mono text-tertiary">0/s</span>
+            <span>{STATUS_LABEL[wsStatus]}</span>
+            <span className="font-mono text-tertiary">
+              {formatRate(eventsPerSecond)}
+            </span>
           </div>
           <ThemeToggle />
         </div>
