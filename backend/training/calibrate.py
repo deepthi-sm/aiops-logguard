@@ -313,17 +313,38 @@ def calibrate(
             f"thresh={grid.anomaly_threshold:.2f}  F1={grid.f1:.3f}"
         )
 
-    # Build per-window correctness targets at the chosen (w1, threshold)
+    # -- Confidence target: margin from the calibrated decision boundary -----
+    #
+    # The original implementation trained the MLP on `correctness =
+    # (preds == labels)`. That looked principled but degenerates badly:
+    # when the ensemble grid-search achieves high training F1 (which our
+    # OpenStack baseline does at F1=1.000), every prediction matches its
+    # label, so `correctness` is all 1s. The MLP then learns to emit a
+    # huge positive logit regardless of input; sigmoid saturates to 1.0
+    # for every prediction at inference. Empirical proof: the live DB had
+    # MIN=MAX=AVG=1.0000, 1 distinct value across 4908+ rows.
+    #
+    # The replacement target — normalised distance from the decision
+    # boundary — varies even on a perfect classifier. Decisive predictions
+    # (combined score far from threshold in either direction) get target
+    # ≈ 1; borderline predictions (combined ≈ threshold) get target ≈ 0.
+    # The MLP now learns a meaningful, monotone function from features to
+    # decisiveness, which is what users actually want from a confidence
+    # score: "how sure is the model about this call?"
+    #
+    # Paper-side framing: confidence is the model's estimate of its
+    # margin from the calibrated decision boundary, in [0, 1].
     combined = grid.w1 * transformer_scores + grid.w2 * ae_norm
-    preds = (combined >= grid.anomaly_threshold).astype(np.int64)
-    correctness = (preds == labels.astype(np.int64)).astype(np.float32)
+    distance = np.abs(combined - grid.anomaly_threshold)
+    max_distance = max(grid.anomaly_threshold, 1.0 - grid.anomaly_threshold)
+    margin_target = np.clip(distance / max_distance, 0.0, 1.0).astype(np.float32)
 
     features = build_confidence_features(transformer_scores, ae_norm)
     confidence_model, conf_metrics = train_confidence_scorer(
-        features, correctness, device=device, verbose=verbose
+        features, margin_target, device=device, verbose=verbose
     )
     confidence_threshold = pick_confidence_threshold(
-        confidence_model, features, correctness, device=device
+        confidence_model, features, margin_target, device=device
     )
     save_confidence_torchscript(confidence_model, confidence_out)
     save_thresholds(
