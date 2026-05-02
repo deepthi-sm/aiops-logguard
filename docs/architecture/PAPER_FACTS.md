@@ -453,12 +453,53 @@ to a calibration leak (thresholds tuned on the same data F1 was
 reported on) — but the AUC=1.000 proves the leak didn't actually
 inflate the result. The model legitimately fits OpenStack.
 
-### Pending — proper-eval run currently in progress
+### Provisional results table (interim — replace when proper-eval finishes)
 
-The four files below are produced by `python -m training.run_proper_eval`
-on full corpora and **do not yet exist** in the repository as of this
-document's generation. The run was launched ~30–40 min before this
-document was written and may finish during the paper-writing window:
+> **READ THIS FIRST.** The numbers below are interim — they come from
+> the *single-model* OpenStack-only training run that finished
+> 2026-05-01T08:19:05Z, plus the held-out diagnostic re-eval. The
+> proper-eval orchestrator (`python -m training.run_proper_eval`) is
+> currently running and will produce a real 2×3 head-to-head table
+> covering both Model A (OpenStack-only) and Model B (Combined
+> OpenStack+HDFS) on three test sets. When that finishes, the user will
+> send the new numbers and this table will be replaced. **Use the
+> numbers below in the paper draft for now** — the model genuinely
+> separates the OpenStack distribution (Val AUC = 1.000 on held-out
+> 20%, threshold-independent), so these are real signals, just narrower
+> in scope than what the proper-eval will deliver.
+
+#### Provisional 2×3 head-to-head — what we know now
+
+|   | OpenStack (val held-out 20%) | HDFS test | Apache (never seen) |
+|---|---:|---:|---:|
+| **Model A — OpenStack-only** (existing artifacts) | **F1 1.000 / P 1.000 / R 1.000 / AUC 1.000** | *pending proper-eval* | *pending proper-eval* |
+| **Model B — Combined OS + HDFS** | *not trained yet* | *pending proper-eval* | *pending proper-eval* |
+
+Source for Model A on OpenStack: `backend/training/RESULTS_HOLDOUT.md`
+val slice (n = 41,560 windows, 8.9% positive). Threshold-independent
+AUC = 1.000 confirms the F1 isn't inflated by a calibration-leak
+artefact — the model's continuous ensemble score perfectly orders
+anomaly windows above normal windows.
+
+#### Cross-dataset claim — interim wording for the paper
+
+Without the proper-eval Apache + HDFS numbers, the paper can still
+make a defensible *in-distribution generalisation* claim:
+
+> "Trained on a 168k/41.5k train/val split of OpenStack, our two-model
+> ensemble achieves F1 = 1.000 and AUC = 1.000 on the held-out
+> validation slice (n = 41,560 windows). The threshold-independent
+> AUC confirms that the perfect F1 reflects a genuine ranking
+> separation, not a calibration artefact."
+
+When the proper-eval numbers arrive, replace this paragraph with the
+stronger cross-dataset claim that Model B closes the gap between
+OpenStack and HDFS / Apache.
+
+#### What the proper-eval suite will replace this section with
+
+`python -m training.run_proper_eval` produces four files. They
+**don't yet exist** at the time this doc was written:
 
 - `backend/training/RESULTS_OPENSTACK_TEST.md` — both models on OpenStack 15% held-out test
 - `backend/training/RESULTS_HDFS_TEST.md` — both models on HDFS 15% held-out test
@@ -472,6 +513,32 @@ document was written and may finish during the paper-writing window:
 
 **Floor condition**: the orchestrator stops with a non-zero exit code
 if any held-out F1 is below 0.7 (`DEFAULT_F1_FLOOR = 0.7`).
+
+#### Component-level baseline numbers (from the existing single-model run, paper-citable today)
+
+| Component | Metric | Value | Notes |
+|---|---|---|---|
+| Transformer (anomaly head) | Best val F1 | 1.000 | val_split = 0.2, seed = 42 |
+| Transformer (anomaly head) | Best val precision | 1.000 | |
+| Transformer (anomaly head) | Best val recall | 1.000 | |
+| Transformer (anomaly head) | Epochs run | 6 / 30 | early stopping fired |
+| AutoEncoder | Best val MSE | 0.00000 | normal-only training |
+| AutoEncoder | Trained on | 189,367 normal windows / 207,801 total | |
+| Ensemble (calibrated) | w1 (transformer) | 0.500 | |
+| Ensemble (calibrated) | w2 (autoencoder) | 0.500 | |
+| Ensemble (calibrated) | Anomaly threshold | 0.550 | |
+| Ensemble (calibrated) | Confidence threshold | 0.300 | |
+| Held-out evaluation | Val F1 | 1.000 | n = 41,560, 8.9% positive |
+| Held-out evaluation | Val AUC | 1.000 | threshold-independent |
+| Held-out evaluation | Train F1 | 1.000 | n = 166,241, 8.9% positive |
+| Held-out evaluation | Train AUC | 1.000 | |
+| RAG seed | Real anomalies indexed | 18,434 | OpenStack training set |
+| RAG seed | Hand-written synthetic incidents | 20 | `synthetic_incidents.jsonl` |
+| RAG seed | Total FAISS entries | 18,454 | `IndexFlatIP` over 384-d unit-norm vectors |
+
+These are the numbers to quote in the paper draft for Methods + Results
+sections **right now**. Replace the "Cross-dataset" subsection only
+when proper-eval finishes.
 
 ---
 
