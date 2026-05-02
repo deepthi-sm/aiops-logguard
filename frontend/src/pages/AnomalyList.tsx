@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useAnomalies } from "../api/queries";
 import {
   AnomalyFilters,
@@ -33,7 +34,15 @@ const INITIAL_STATE: AnomalyFiltersState = {
  * 200-row mock dataset.
  */
 export function AnomalyList() {
-  const [filters, setFilters] = useState<AnomalyFiltersState>(INITIAL_STATE);
+  const [searchParams] = useSearchParams();
+  // The Upload page redirects here with `?source=user-upload` after an
+  // upload completes — seed the source filter from the URL so the user
+  // lands on a pre-filtered view.
+  const initialSource = searchParams.get("source");
+  const [filters, setFilters] = useState<AnomalyFiltersState>({
+    ...INITIAL_STATE,
+    source: initialSource,
+  });
   const list = useAnomalies({ limit: 200 });
 
   const items = list.data?.items ?? [];

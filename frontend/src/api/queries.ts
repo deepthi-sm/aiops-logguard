@@ -23,9 +23,11 @@ import {
   getHealth,
   getMetricsSummary,
   getTimeline,
+  getUploadStatus,
   listAnomalies,
   listFeedback,
   postFeedback,
+  uploadLogFile,
   type ListAnomaliesParams,
 } from "./client";
 import type {
@@ -41,6 +43,8 @@ import type {
   MetricsSummary,
   TimelineResponse,
   TimelineWindow,
+  UploadJobResponse,
+  UploadStatusResponse,
 } from "../types";
 
 export function useAnomalies(
@@ -130,5 +134,35 @@ export function useFeedbackHistory(limit = 100) {
     queryKey: ["feedback-history", limit],
     queryFn: () => listFeedback(limit),
     refetchInterval: 30_000,
+  });
+}
+
+// -- upload ---------------------------------------------------------------
+
+interface UploadVars {
+  file: File;
+  rate?: number;
+}
+
+export function useUpload() {
+  return useMutation<UploadJobResponse, Error, UploadVars>({
+    mutationFn: ({ file, rate }) => uploadLogFile(file, { rate }),
+  });
+}
+
+/** Polls upload progress every 2 s while running, stops once the
+ * server reports a terminal state. Disabled when `jobId` is falsy. */
+export function useUploadStatus(jobId: string | null) {
+  return useQuery<UploadStatusResponse, Error>({
+    queryKey: ["upload-status", jobId],
+    queryFn: () => getUploadStatus(jobId!),
+    enabled: Boolean(jobId),
+    // 2-second cadence per the spec for live progress feedback.
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      if (status === "completed" || status === "failed") return false;
+      return 2_000;
+    },
+    refetchIntervalInBackground: true,
   });
 }

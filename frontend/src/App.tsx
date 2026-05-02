@@ -5,6 +5,7 @@ import { ProtectedRoute } from "./components/ProtectedRoute";
 import { PublicOnlyRoute } from "./components/PublicOnlyRoute";
 import { AnomalyDetail } from "./pages/AnomalyDetail";
 import { AnomalyList } from "./pages/AnomalyList";
+import { Connect } from "./pages/Connect";
 import { Dashboard } from "./pages/Dashboard";
 import { Feedback } from "./pages/Feedback";
 import { Incidents } from "./pages/Incidents";
@@ -14,6 +15,7 @@ import { Settings } from "./pages/Settings";
 import { Signup } from "./pages/Signup";
 import { System } from "./pages/System";
 import { Training } from "./pages/Training";
+import { Upload } from "./pages/Upload";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -63,6 +65,8 @@ export default function App() {
             <Route path="/anomalies" element={<AnomalyList />} />
             <Route path="/anomalies/:id" element={<AnomalyDetail />} />
             <Route path="/feedback" element={<Feedback />} />
+            <Route path="/upload" element={<Upload />} />
+            <Route path="/connect" element={<Connect />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/admin/system" element={<System />} />
             <Route path="/admin/training" element={<Training />} />

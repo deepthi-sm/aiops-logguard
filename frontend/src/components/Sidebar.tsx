@@ -4,9 +4,11 @@ import {
   Cpu,
   FileText,
   LayoutDashboard,
+  Link2,
   LogOut,
   MessageSquare,
   Settings as SettingsIcon,
+  Upload,
   type LucideIcon,
 } from "lucide-react";
 import { NavLink, useNavigate } from "react-router-dom";
@@ -50,6 +52,8 @@ interface NavItem {
 const USER_ITEMS: NavItem[] = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/anomalies", label: "Anomalies", icon: AlignLeft },
+  { to: "/upload", label: "Upload", icon: Upload },
+  { to: "/connect", label: "Connect", icon: Link2 },
   { to: "/feedback", label: "Feedback", icon: MessageSquare },
   { to: "/settings", label: "Settings", icon: SettingsIcon },
 ];
