@@ -24,21 +24,29 @@ Pool / loop strategy
 """
 from __future__ import annotations
 
-import asyncio
 import os
-from collections.abc import Iterator
-from datetime import UTC, datetime, timedelta
 
-import asyncpg
-import pytest
-from fastapi.testclient import TestClient
+# Defuse the OpenMP DLL conflict between PyTorch (libiomp5md.dll) and
+# FAISS (libomp140.x86_64.dll) on Windows when both are imported in the
+# same process. Without this, any test that imports faiss AFTER torch
+# (or vice versa) hangs or aborts mid-test. CI on Linux doesn't hit
+# this; setting it unconditionally is harmless on Linux/macOS too.
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
-from api import mock_data
-from api.db import DB_URL_ENV, create_pool
-from api.main import app
-from api.migrations import apply_schema
-from api.repository import install_jsonb_codec
-from api.schemas import Anomaly
+import asyncio  # noqa: E402
+from collections.abc import Iterator  # noqa: E402
+from datetime import UTC, datetime, timedelta  # noqa: E402
+
+import asyncpg  # noqa: E402
+import pytest  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+
+from api import mock_data  # noqa: E402
+from api.db import DB_URL_ENV, create_pool  # noqa: E402
+from api.main import app  # noqa: E402
+from api.migrations import apply_schema  # noqa: E402
+from api.repository import install_jsonb_codec  # noqa: E402
+from api.schemas import Anomaly  # noqa: E402
 
 
 def _db_url() -> str | None:
