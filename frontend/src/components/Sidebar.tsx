@@ -4,12 +4,14 @@ import {
   Cpu,
   FileText,
   LayoutDashboard,
+  Link2,
   LogOut,
   MessageSquare,
   Settings as SettingsIcon,
+  Upload,
   type LucideIcon,
 } from "lucide-react";
-import { NavLink, useNavigate } from "react-router-dom";
+import { Link, NavLink, useNavigate } from "react-router-dom";
 import type { ConnectionStatus } from "../api/websocket";
 import { useAuth } from "../hooks/useAuth";
 import { cn } from "../lib/cn";
@@ -20,10 +22,12 @@ import { ThemeToggle } from "./ThemeToggle";
  * Fixed 220px sidebar per spec.
  *
  *   ┌─────────────────────────┐
- *   │  ⬢ LogGuard             │  ← Logo
+ *   │  ⬢ LogGuard             │  ← Logo (clickable, /dashboard)
  *   │                         │
  *   │  ▢ Dashboard            │
  *   │  ▢ Anomalies        [3] │  ← user-facing routes
+ *   │  ▢ Upload               │
+ *   │  ▢ Connect              │
  *   │  ▢ Feedback             │
  *   │  ▢ Settings             │
  *   │  ─────────────────────  │  ← hairline divider
@@ -33,7 +37,7 @@ import { ThemeToggle } from "./ThemeToggle";
  *   │  ▢ Incidents            │
  *   │                         │
  *   │  ─────────────────────  │  ← hairline divider
- *   │  ● connected  0/s    ☀  │  ← live status + theme toggle
+ *   │  ● connected  3/s    ☀  │  ← live status + theme toggle
  *   └─────────────────────────┘
  *
  * The bottom status pill is driven by the real WebSocket: dot colour
@@ -41,6 +45,35 @@ import { ThemeToggle } from "./ThemeToggle";
  * Both are owned by `<Layout>` (one singleton client) and passed down
  * here via props.
  */
+
+interface SidebarProps {
+  wsStatus: ConnectionStatus;
+  eventsPerSecond: number;
+}
+
+const STATUS_LABEL: Record<ConnectionStatus, string> = {
+  connecting: "connecting",
+  connected: "connected",
+  reconnecting: "reconnecting",
+  disconnected: "offline",
+};
+
+/** Colour class for the dot. Uses the same severity tokens as the rest
+ * of the dashboard so it follows the theme. `success` = green, `warning`
+ * = amber, `critical` = red. */
+const STATUS_DOT: Record<ConnectionStatus, string> = {
+  connected: "bg-success",
+  connecting: "bg-warning",
+  reconnecting: "bg-warning",
+  disconnected: "bg-critical",
+};
+
+function formatRate(rate: number): string {
+  if (rate <= 0) return "0/s";
+  if (rate < 1) return `${rate.toFixed(2)}/s`;
+  if (rate < 10) return `${rate.toFixed(1)}/s`;
+  return `${Math.round(rate)}/s`;
+}
 
 interface NavItem {
   to: string;
@@ -52,6 +85,8 @@ interface NavItem {
 const USER_ITEMS: NavItem[] = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/anomalies", label: "Anomalies", icon: AlignLeft },
+  { to: "/upload", label: "Upload", icon: Upload },
+  { to: "/connect", label: "Connect", icon: Link2 },
   { to: "/feedback", label: "Feedback", icon: MessageSquare },
   { to: "/settings", label: "Settings", icon: SettingsIcon },
 ];
@@ -83,35 +118,6 @@ function NavItemLink({ item }: { item: NavItem }) {
   );
 }
 
-interface SidebarProps {
-  wsStatus: ConnectionStatus;
-  eventsPerSecond: number;
-}
-
-const STATUS_LABEL: Record<ConnectionStatus, string> = {
-  connecting: "connecting",
-  connected: "connected",
-  reconnecting: "reconnecting",
-  disconnected: "offline",
-};
-
-/** Colour class for the dot. Uses the same severity tokens as the rest
- * of the dashboard so it follows the theme. `success` = green, `warning`
- * = amber, `critical` = red. */
-const STATUS_DOT: Record<ConnectionStatus, string> = {
-  connected: "bg-success",
-  connecting: "bg-warning",
-  reconnecting: "bg-warning",
-  disconnected: "bg-critical",
-};
-
-function formatRate(rate: number): string {
-  if (rate <= 0) return "0/s";
-  if (rate < 1) return `${rate.toFixed(2)}/s`;
-  if (rate < 10) return `${rate.toFixed(1)}/s`;
-  return `${Math.round(rate)}/s`;
-}
-
 export function Sidebar({ wsStatus, eventsPerSecond }: SidebarProps) {
   const { signOut, user } = useAuth();
   const navigate = useNavigate();
@@ -125,13 +131,17 @@ export function Sidebar({ wsStatus, eventsPerSecond }: SidebarProps) {
 
   return (
     <aside className="fixed left-0 top-0 z-10 flex h-full w-[220px] flex-col border-r-[0.5px] border-border-subtle bg-sidebar">
-      {/* Brand */}
-      <div className="flex items-center gap-2 px-5 pb-8 pt-6 text-iris">
+      {/* Brand — clickable, routes to /dashboard */}
+      <Link
+        to="/dashboard"
+        className="flex items-center gap-2 px-5 pb-8 pt-6 text-iris transition-colors hover:text-iris-deep focus:outline-none focus-visible:rounded-md focus-visible:ring-1 focus-visible:ring-iris/40"
+        aria-label="Go to dashboard"
+      >
         <Logo size={20} />
         <span className="text-[15px] font-medium tracking-tight text-primary">
           LogGuard
         </span>
-      </div>
+      </Link>
 
       {/* Nav */}
       <nav className="flex-1 px-3">

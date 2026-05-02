@@ -108,9 +108,13 @@ function ReadyContent({
         </div>
       </div>
 
-      {data.similar_incidents.length > 0 && (
-        <div className="mt-5">
-          <EyebrowLabel>Similar past incidents</EyebrowLabel>
+      <div className="mt-5">
+        <EyebrowLabel>Similar past incidents</EyebrowLabel>
+        {data.similar_incidents.length === 0 ? (
+          <div className="rounded-md border-[0.5px] border-border-subtle bg-page px-3 py-3 text-[12px] text-tertiary">
+            No similar incidents found in the FAISS index for this anomaly.
+          </div>
+        ) : (
           <div className="space-y-1.5">
             {data.similar_incidents.map((inc) => (
               <div
@@ -131,8 +135,8 @@ function ReadyContent({
               </div>
             ))}
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </>
   );
 }

@@ -65,41 +65,45 @@ def embed_windows(
 ) -> np.ndarray:
     """Embed each window's templates into (N, window_len, dim).
 
-    Calls the chunked implementation under the hood with an in-memory
-    cache, so it stays simple for callers that don't need disk
-    checkpointing (e.g. tests that pass a stub embedder). Production
-    paths should call `embed_or_load` instead — that's the version with
-    on-disk memmap'd checkpointing + resume support.
+    One single batched `model.encode()` call on all N*window_len
+    strings — same shape as the original implementation, kept this way
+    so existing tests + the small-call paths in `ml.embedder.embed_window`
+    don't suddenly observe two encode calls instead of one. The only
+    behavioural change vs the pre-Task-1 version is `show_progress_bar=True`
+    (the visible-progress fix).
+
+    For full-corpus production embeddings, call `embed_or_load` — that
+    path adds on-disk memmap'd checkpointing + resume support.
     """
     if not windows:
         return np.empty((0, 0, 0), dtype=np.float32)
 
-    # Probe the embedder's output dim with a single template so we don't
-    # have to special-case "first chunk allocates the array" downstream.
     window_len = len(windows[0].templates)
     if any(len(w.templates) != window_len for w in windows):
         raise ValueError("all windows must have the same number of templates")
 
-    probe = np.asarray(
+    flat_texts: list[str] = []
+    for w in windows:
+        flat_texts.extend(w.templates)
+
+    flat_emb = np.asarray(
         model.encode(
-            [windows[0].templates[0]],
-            batch_size=1,
+            flat_texts,
+            batch_size=batch_size,
             normalize_embeddings=True,
-            show_progress_bar=False,
+            show_progress_bar=True,
         ),
         dtype=np.float32,
     )
-    if probe.ndim != 2:
-        raise RuntimeError(f"embedder returned ndim={probe.ndim}, expected 2")
-    dim = probe.shape[-1]
+    if flat_emb.ndim != 2:
+        raise RuntimeError(f"embedder returned ndim={flat_emb.ndim}, expected 2")
+    if flat_emb.shape[0] != len(windows) * window_len:
+        raise RuntimeError(
+            f"embedder returned {flat_emb.shape[0]} vectors, "
+            f"expected {len(windows) * window_len}"
+        )
 
-    out = np.empty((len(windows), window_len, dim), dtype=np.float32)
-    _embed_into(
-        out, windows,
-        model=model, batch_size=batch_size,
-        start_chunk=0, progress_path=None,
-    )
-    return out
+    return flat_emb.reshape(len(windows), window_len, flat_emb.shape[1])
 
 
 def _embed_into(
@@ -288,33 +292,63 @@ def embed_or_load(
             print(f"[embed] --resume: partial cache unreadable ({e}) — starting fresh")
             start_chunk = 0
 
-    # Fresh start: probe the embedder for its output dim, then allocate.
+    # Fresh start: embed the first chunk, derive dim from that result,
+    # allocate the memmap, copy chunk 0 into it, then continue from
+    # chunk 1. Folding the dim discovery into chunk 0 keeps the test
+    # invariant "small data = exactly N encode calls per chunk" intact
+    # — a separate probe call would push the count to N+1.
     if start_chunk == 0:
         if cache_path.exists():
             cache_path.unlink()
         progress_path.unlink(missing_ok=True)
 
-        probe = np.asarray(
+        first_chunk_size = min(CHUNK_WINDOWS, len(windows))
+        first_chunk = windows[:first_chunk_size]
+        first_flat: list[str] = []
+        for w in first_chunk:
+            first_flat.extend(w.templates)
+        first_emb = np.asarray(
             model.encode(
-                [windows[0].templates[0]],
-                batch_size=1,
+                first_flat,
+                batch_size=batch_size,
                 normalize_embeddings=True,
-                show_progress_bar=False,
+                show_progress_bar=True,
             ),
             dtype=np.float32,
         )
-        if probe.ndim != 2:
-            raise RuntimeError(f"embedder returned ndim={probe.ndim}, expected 2")
-        dim = probe.shape[-1]
+        if first_emb.ndim != 2:
+            raise RuntimeError(
+                f"embedder returned ndim={first_emb.ndim}, expected 2"
+            )
+        if first_emb.shape[0] != first_chunk_size * window_len:
+            raise RuntimeError(
+                f"embedder returned {first_emb.shape[0]} vectors, "
+                f"expected {first_chunk_size * window_len}"
+            )
+        dim = first_emb.shape[-1]
 
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         out = np.lib.format.open_memmap(
             cache_path, mode="w+", dtype=np.float32,
             shape=(len(windows), window_len, dim),
         )
+        out[:first_chunk_size] = first_emb.reshape(
+            first_chunk_size, window_len, dim,
+        )
+        if hasattr(out, "flush"):
+            out.flush()  # type: ignore[attr-defined]
+        progress_path.write_text("1")
+        n_chunks_total = (len(windows) + CHUNK_WINDOWS - 1) // CHUNK_WINDOWS
+        print(
+            f"[embed] {len(windows):,} windows × {window_len} templates × {dim}D, "
+            f"{n_chunks_total} chunks of up to {CHUNK_WINDOWS:,} windows each"
+        )
+        # Continue from chunk 1; chunk 0 already written.
+        start_chunk = 1
     else:
         out = np.lib.format.open_memmap(cache_path, mode="r+")
 
+    # _embed_into is a no-op when start_chunk >= n_chunks (all done).
     _embed_into(
         out, windows,
         model=model, batch_size=batch_size,

@@ -23,6 +23,8 @@ import type {
   Severity,
   TimelineResponse,
   TimelineWindow,
+  UploadJobResponse,
+  UploadStatusResponse,
 } from "../types";
 import {
   findMockAnomaly,
@@ -93,6 +95,7 @@ export interface ListAnomaliesParams {
   limit?: number;
   since?: string;
   severity?: Severity;
+  source?: string;
   cursor?: string;
 }
 
@@ -107,6 +110,9 @@ export async function listAnomalies(
     if (params.since) {
       items = items.filter((a) => a.detected_at > params.since!);
     }
+    if (params.source) {
+      items = items.filter((a) => a.source === params.source);
+    }
     if (params.limit !== undefined) {
       items = items.slice(0, params.limit);
     }
@@ -116,6 +122,7 @@ export async function listAnomalies(
   if (params.limit) search.set("limit", String(params.limit));
   if (params.since) search.set("since", params.since);
   if (params.severity) search.set("severity", params.severity);
+  if (params.source) search.set("source", params.source);
   if (params.cursor) search.set("cursor", params.cursor);
   const qs = search.toString();
   const { data } = await fetchJson<AnomalyListResponse>(
@@ -232,3 +239,73 @@ export async function getHealth(): Promise<HealthResponse> {
 }
 
 export const isMockMode = USE_MOCK;
+
+// -- upload ---------------------------------------------------------------
+
+/** Backend constant kept in sync with `MAX_BYTES` in `api/upload.py`. */
+export const UPLOAD_MAX_BYTES = 50 * 1024 * 1024;
+
+/**
+ * POST /api/v1/upload — multipart, returns 202 with a job id. Caller
+ * then polls `getUploadStatus(jobId)` for progress.
+ *
+ * The optional `rate` (lines/sec) is passed as a query param when
+ * provided — the backend caps it at 1000. Default omits the param so
+ * the backend uses its own default (50).
+ */
+export async function uploadLogFile(
+  file: File,
+  options: { rate?: number } = {},
+): Promise<UploadJobResponse> {
+  if (USE_MOCK) {
+    // Mock mode just fakes a completed job — there's no real Redis to
+    // stream into. Useful for frontend-only iteration.
+    return mockDelay(
+      {
+        job_id: "mock_" + Math.random().toString(36).slice(2, 10),
+        total_lines: 0,
+        rate: options.rate ?? 50,
+        status: "completed" as const,
+      },
+      300,
+    );
+  }
+  const form = new FormData();
+  form.append("file", file);
+  const qs = options.rate ? `?rate=${encodeURIComponent(options.rate)}` : "";
+  // We can't use `fetchJson()` here because it always sets
+  // Content-Type: application/json. Multipart needs the browser to set
+  // its own multipart Content-Type with the boundary.
+  const res = await fetch(`${BASE}/upload${qs}`, {
+    method: "POST",
+    body: form,
+  });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const body = (await res.json()) as { detail?: string };
+      if (body.detail) detail = body.detail;
+    } catch {
+      /* not JSON */
+    }
+    throw new ApiError(res.status, detail);
+  }
+  return (await res.json()) as UploadJobResponse;
+}
+
+export async function getUploadStatus(jobId: string): Promise<UploadStatusResponse> {
+  if (USE_MOCK) {
+    return mockDelay({
+      job_id: jobId,
+      status: "completed" as const,
+      lines_streamed: 0,
+      total_lines: 0,
+      eta_seconds: null,
+      error: null,
+    });
+  }
+  const { data } = await fetchJson<UploadStatusResponse>(
+    `/upload/${encodeURIComponent(jobId)}/status`,
+  );
+  return data!;
+}

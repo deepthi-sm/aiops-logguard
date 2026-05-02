@@ -115,6 +115,26 @@ export interface FeedbackHistoryResponse {
   false_positive: number;
 }
 
+// -- Upload ---------------------------------------------------------------
+
+export type UploadStatus = "queued" | "running" | "completed" | "failed";
+
+export interface UploadJobResponse {
+  job_id: string;
+  total_lines: number;
+  rate: number;
+  status: UploadStatus;
+}
+
+export interface UploadStatusResponse {
+  job_id: string;
+  status: UploadStatus;
+  lines_streamed: number;
+  total_lines: number;
+  eta_seconds: number | null;
+  error: string | null;
+}
+
 export interface HealthResponse {
   status: "ok" | "degraded";
   version: string;
