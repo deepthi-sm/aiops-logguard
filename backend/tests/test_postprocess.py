@@ -59,27 +59,74 @@ def _detection(
 
 
 class TestDecideSeverity:
-    def test_critical_when_failure_prob_high_and_source_in_critical_set(self):
-        det = _detection(transformer_prob=0.9)
+    """The severity contract is:
+
+      critical  if  ensemble_score > 0.85 AND source in critical_sources
+      warning   if  ensemble_score > 0.75
+      info      otherwise (anything that passed the upstream detection gate)
+
+    Tests below cover each branch + the boundary conditions. The
+    `test_info_in_calibration_range` case exists to catch a regression
+    that previously emptied the info tier entirely (only 2 info rows
+    out of 5025 in the live DB) — see the PR notes.
+    """
+
+    def test_critical_when_ensemble_high_and_source_in_critical_set(self):
+        det = _detection(ensemble=0.9, transformer_prob=0.5)
         assert (
             decide_severity(det, "nova-api-prod-3", critical_sources=frozenset({"nova-api-prod-3"}))
             == "critical"
         )
 
-    def test_high_failure_prob_alone_is_not_critical(self):
+    def test_high_ensemble_alone_is_not_critical(self):
         """The source must be in the critical set; otherwise we step down to
-        warning/info. Pass an explicit empty frozenset so the env-driven
-        default doesn't accidentally include 'some-other-host'."""
-        det = _detection(transformer_prob=0.9, ensemble=0.9)
+        warning. Pass an explicit empty frozenset so the env-driven default
+        doesn't accidentally include 'some-other-host'."""
+        det = _detection(ensemble=0.9, transformer_prob=0.9)
         assert (
             decide_severity(det, "some-other-host", critical_sources=frozenset())
             == "warning"
         )
 
-    def test_warning_when_ensemble_high(self):
-        det = _detection(ensemble=0.9, transformer_prob=0.5)
+    def test_high_transformer_prob_alone_is_not_critical(self):
+        """Critical no longer keys off transformer_prob. A high
+        transformer_prob with low ensemble should NOT be critical even on
+        a critical source."""
+        det = _detection(transformer_prob=0.99, ensemble=0.6)  # ensemble < 0.85
+        assert (
+            decide_severity(det, "nova-api-prod-3", critical_sources=frozenset({"nova-api-prod-3"}))
+            == "info"
+        )
+
+    def test_warning_when_ensemble_above_warning_threshold(self):
+        det = _detection(ensemble=0.80, transformer_prob=0.5)
         assert (
             decide_severity(det, "host-1", critical_sources=frozenset()) == "warning"
+        )
+
+    def test_info_in_calibration_range(self):
+        """REGRESSION GUARD: any ensemble in [0.55, 0.75] with a non-critical
+        source must land in the info tier. Previous bug emptied this range
+        because the warning threshold was 0.85, leaving info effectively
+        unreachable for live data clustering above 0.82.
+        """
+        for ensemble in (0.56, 0.60, 0.70, 0.75):
+            det = _detection(ensemble=ensemble, transformer_prob=0.5)
+            assert (
+                decide_severity(det, "host-1", critical_sources=frozenset()) == "info"
+            ), f"expected info at ensemble={ensemble}"
+
+    def test_warning_threshold_boundary_is_strict_inequality(self):
+        """Exactly 0.75 is NOT warning — needs to exceed it."""
+        det = _detection(ensemble=0.75, transformer_prob=0.5)
+        assert decide_severity(det, "host-1", critical_sources=frozenset()) == "info"
+
+    def test_critical_threshold_boundary_is_strict_inequality(self):
+        """Exactly 0.85 is NOT critical — needs to exceed it."""
+        det = _detection(ensemble=0.85, transformer_prob=0.5)
+        assert (
+            decide_severity(det, "nova-api-prod-3", critical_sources=frozenset({"nova-api-prod-3"}))
+            == "warning"
         )
 
     def test_info_when_neither_rule_fires(self):
@@ -102,9 +149,9 @@ class TestDecideSeverity:
         """Sentinel behaviour: critical_sources=None falls through to the
         env-driven default. This is the production code path."""
         monkeypatch.delenv(CRITICAL_SOURCES_ENV, raising=False)
-        # Ensemble high enough to clear the warning threshold so we can
-        # distinguish "critical default fired" from "fell to info".
-        det = _detection(transformer_prob=0.9, ensemble=0.9)
+        # Ensemble high enough to clear the critical threshold so we can
+        # distinguish "critical default fired" from "fell to warning".
+        det = _detection(ensemble=0.9, transformer_prob=0.5)
         # A name from the demo default should fire critical.
         any_default_source = next(iter(DEFAULT_CRITICAL_SOURCES))
         assert decide_severity(det, any_default_source) == "critical"
