@@ -21,6 +21,7 @@ from api.schemas import (
     AnomalyListResponse,
     DriftStatus,
     Explanation,
+    FeedbackHistoryResponse,
     FeedbackResponse,
     MetricsSummary,
     TimelineResponse,
@@ -201,6 +202,63 @@ def test_post_feedback_404_for_missing_anomaly(client):
         json={"feedback": "true_positive"},
     )
     assert r.status_code == 404
+
+
+# ---------- GET /feedback (list of past verdicts) ----------
+
+def test_list_feedback_empty_when_nothing_submitted(client):
+    """Fresh test DB has no feedback rows. Endpoint returns empty list +
+    zero counts, not a 404."""
+    r = client.get("/api/v1/feedback")
+    assert r.status_code == 200
+    body = r.json()
+    FeedbackHistoryResponse.model_validate(body)
+    assert body["items"] == []
+    assert body["total"] == 0
+    assert body["true_positive"] == 0
+    assert body["false_positive"] == 0
+
+
+def test_list_feedback_returns_submitted_rows(client):
+    """Submit two verdicts, then list — both should come back with the
+    correct counts and shape."""
+    targets = mock_data.all_anomalies()[:2]
+    client.post(
+        f"/api/v1/anomalies/{targets[0].id}/feedback",
+        json={"feedback": "true_positive"},
+    )
+    client.post(
+        f"/api/v1/anomalies/{targets[1].id}/feedback",
+        json={"feedback": "false_positive"},
+    )
+    r = client.get("/api/v1/feedback")
+    assert r.status_code == 200
+    body = r.json()
+    FeedbackHistoryResponse.model_validate(body)
+    assert body["total"] == 2
+    assert body["true_positive"] == 1
+    assert body["false_positive"] == 1
+    ids = {it["anomaly_id"] for it in body["items"]}
+    assert ids == {targets[0].id, targets[1].id}
+    # Each item carries the denormalised anomaly fields the list view needs.
+    for it in body["items"]:
+        assert "source" in it and "log_template" in it and "severity" in it
+        assert it["verdict"] in ("true_positive", "false_positive")
+
+
+def test_list_feedback_respects_limit(client):
+    """`?limit=N` caps the items list. Counts still reflect the full DB."""
+    targets = mock_data.all_anomalies()[:3]
+    for t in targets:
+        client.post(
+            f"/api/v1/anomalies/{t.id}/feedback",
+            json={"feedback": "true_positive"},
+        )
+    r = client.get("/api/v1/feedback?limit=2")
+    body = r.json()
+    assert len(body["items"]) == 2
+    assert body["total"] == 3  # not capped — total is the global count
+    assert body["true_positive"] == 3
 
 
 # ---------- timestamp format (contract: ISO 8601 UTC with 'Z' suffix) ----------

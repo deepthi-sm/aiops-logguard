@@ -138,6 +138,27 @@ class FeedbackResponse(BaseModel):
     ok: bool
 
 
+class FeedbackHistoryItem(BaseModel):
+    """One row of feedback history. Fields are denormalised from the
+    `anomalies` table so the frontend can render the list without
+    follow-up GETs per anomaly."""
+    anomaly_id: str
+    verdict: Feedback
+    submitted_at: IsoUtcDatetime  # proxied by detected_at; we don't yet
+                                  # store a separate feedback timestamp.
+    source: str
+    log_template: str
+    severity: Severity
+
+
+class FeedbackHistoryResponse(BaseModel):
+    """GET /api/v1/feedback. Newest first; capped by `limit`."""
+    items: list[FeedbackHistoryItem]
+    total: int = Field(ge=0)
+    true_positive: int = Field(ge=0)
+    false_positive: int = Field(ge=0)
+
+
 # ---------- WebSocket message envelopes ----------
 # These aren't auto-included in openapi.json (FastAPI doesn't introspect WS),
 # but they document the WS contract so Person B has a single source of truth.

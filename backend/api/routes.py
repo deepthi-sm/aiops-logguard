@@ -25,6 +25,8 @@ from api.schemas import (
     DriftStatus,
     Explanation,
     FeedbackRequest,
+    FeedbackHistoryItem,
+    FeedbackHistoryResponse,
     FeedbackResponse,
     MetricsSummary,
     Severity,
@@ -128,6 +130,26 @@ async def post_feedback(
     if not updated:
         raise HTTPException(status_code=404, detail="Anomaly not found")
     return FeedbackResponse(ok=True)
+
+
+@router.get("/feedback", response_model=FeedbackHistoryResponse)
+async def list_feedback(
+    pool: Annotated[asyncpg.Pool, Depends(get_pool)],
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+) -> FeedbackHistoryResponse:
+    """List anomalies that have an engineer-supplied verdict, newest first.
+
+    The engineer column is intentionally not in the response — multi-user
+    auth + per-user attribution isn't modelled in the schema yet. The
+    frontend can show the signed-in user's name where appropriate.
+    """
+    items, total, tp, fp = await repository.list_feedback(pool, limit=limit)
+    return FeedbackHistoryResponse(
+        items=[FeedbackHistoryItem(**it) for it in items],
+        total=total,
+        true_positive=tp,
+        false_positive=fp,
+    )
 
 
 # ---------- /metrics ----------
