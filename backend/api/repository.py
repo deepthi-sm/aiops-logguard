@@ -53,16 +53,39 @@ async def install_jsonb_codec(conn: asyncpg.Connection) -> None:
 # -- hydration helpers ------------------------------------------------------
 
 
+def _coerce_jsonb(value: Any) -> Any:
+    """Tolerate JSONB columns that arrive as strings.
+
+    With the codec installed (see `install_jsonb_codec`) JSONB returns
+    as native Python. But rows written by an older runner without the
+    codec, or read from a connection that didn't pick up the codec,
+    can come back as a JSON-string. Defensively `json.loads` once if we
+    see a string; otherwise return as-is. Idempotent for already-decoded
+    values.
+    """
+    if isinstance(value, (str, bytes, bytearray)):
+        try:
+            return json.loads(value)
+        except (TypeError, ValueError):
+            return None
+    return value
+
+
 def hydrate_anomaly(row: asyncpg.Record) -> Anomaly:
     """Map an `anomalies` row to the public Anomaly schema.
 
     `sequence_preview`, `top_contributing_lines`, and `similar_incidents`
-    are JSONB columns — codec already converts them to Python objects.
+    are JSONB columns — codec normally converts them to Python objects;
+    `_coerce_jsonb` is a defensive fallback for rows that bypassed the
+    codec when they were written.
     """
+    raw_contrib = _coerce_jsonb(row["top_contributing_lines"]) or []
     contributing = [
         ContributingLine(line=item["line"], attention=float(item["attention"]))
-        for item in (row["top_contributing_lines"] or [])
+        for item in raw_contrib
+        if isinstance(item, dict)
     ]
+    raw_seq = _coerce_jsonb(row["sequence_preview"]) or []
     return Anomaly(
         id=row["id"],
         detected_at=row["detected_at"],
@@ -73,7 +96,7 @@ def hydrate_anomaly(row: asyncpg.Record) -> Anomaly:
         failure_probability=float(row["failure_probability"] or 0.0),
         predicted_failure_window_min=row["predicted_failure_window_min"],
         log_template=row["log_template"] or "",
-        sequence_preview=list(row["sequence_preview"] or []),
+        sequence_preview=[str(s) for s in raw_seq],
         top_contributing_lines=contributing,
         explanation_status=row["explanation_status"],
         cluster_id=row["cluster_id"] or "",
@@ -86,6 +109,7 @@ def hydrate_explanation(row: asyncpg.Record) -> Explanation | None:
     populated `root_cause` yet (status `pending`)."""
     if row["root_cause"] is None and row["recommended_fix"] is None:
         return None
+    raw_similar = _coerce_jsonb(row["similar_incidents"]) or []
     similar = [
         SimilarIncident(
             incident_id=item["incident_id"],
@@ -93,14 +117,17 @@ def hydrate_explanation(row: asyncpg.Record) -> Explanation | None:
             resolved_at=_parse_iso(item.get("resolved_at")),
             similarity_score=float(item["similarity_score"]),
         )
-        for item in (row["similar_incidents"] or [])
+        for item in raw_similar
+        if isinstance(item, dict)
     ]
     # `attention_weights` isn't a column today — derive from
     # top_contributing_lines for now. When the RAG worker stores its own
     # attention vector we can switch to that.
+    raw_contrib = _coerce_jsonb(row["top_contributing_lines"]) or []
     weights = [
         float(item["attention"])
-        for item in (row["top_contributing_lines"] or [])
+        for item in raw_contrib
+        if isinstance(item, dict)
     ]
     return Explanation(
         root_cause=row["root_cause"] or "",
@@ -271,6 +298,59 @@ async def record_feedback(
             feedback,
         )
     return result.endswith(" 1")
+
+
+async def list_feedback(
+    pool: asyncpg.Pool,
+    *,
+    limit: int = 100,
+) -> tuple[list[dict[str, Any]], int, int, int]:
+    """Return (items, total, true_positive_count, false_positive_count).
+
+    Joins are unnecessary — feedback lives on the `anomalies` row itself
+    as a TEXT column. We pull only the fields the frontend list view
+    needs and skip the JSONB columns to keep the payload small.
+
+    Sorted by `detected_at DESC` because we don't yet store a separate
+    `feedback_submitted_at` timestamp; the underlying anomaly's
+    detection time is a reasonable proxy for ordering ("most recent
+    feedback at the top of the list" maps to "most recent anomaly
+    that has feedback").
+    """
+    sql = (
+        "SELECT id, severity, source, log_template, detected_at, feedback "
+        "FROM anomalies "
+        "WHERE feedback IS NOT NULL "
+        "ORDER BY detected_at DESC "
+        "LIMIT $1"
+    )
+    counts_sql = (
+        "SELECT "
+        "  COUNT(*) FILTER (WHERE feedback = 'true_positive') AS tp, "
+        "  COUNT(*) FILTER (WHERE feedback = 'false_positive') AS fp, "
+        "  COUNT(*) FILTER (WHERE feedback IS NOT NULL) AS total "
+        "FROM anomalies"
+    )
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(sql, limit)
+        counts = await conn.fetchrow(counts_sql)
+    items = [
+        {
+            "anomaly_id": r["id"],
+            "verdict": r["feedback"],
+            "submitted_at": r["detected_at"],
+            "source": r["source"],
+            "log_template": r["log_template"] or "",
+            "severity": r["severity"],
+        }
+        for r in rows
+    ]
+    return (
+        items,
+        int(counts["total"] or 0),
+        int(counts["tp"] or 0),
+        int(counts["fp"] or 0),
+    )
 
 
 # -- metrics queries --------------------------------------------------------

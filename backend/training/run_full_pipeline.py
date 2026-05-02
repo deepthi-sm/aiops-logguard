@@ -242,7 +242,14 @@ def step_embed_and_label(
 def step_train_transformer(
     embeddings: np.ndarray, labels: np.ndarray, *,
     artifact_dir: Path, device: str, rebuild: bool, sample_mode: bool,
+    epochs_override: int | None = None,
 ) -> dict:
+    """Train + save the transformer head.
+
+    `epochs_override` lets a caller force a specific epoch budget — used
+    by the smoke test in `run_proper_eval.py` (epochs=2, finishes in
+    seconds). If unset, defaults to 5 in sample_mode and 30 otherwise.
+    """
     _stamp("STEP 4 — train transformer")
     out = artifact_dir / "transformer.pt"
     metrics_out = artifact_dir / "transformer_metrics.json"
@@ -252,8 +259,14 @@ def step_train_transformer(
         with metrics_out.open("r", encoding="utf-8") as f:
             return json.load(f)
 
+    if epochs_override is not None:
+        epochs = epochs_override
+    elif sample_mode:
+        epochs = 5
+    else:
+        epochs = 30
     config = TransformerTrainConfig(
-        epochs=5 if sample_mode else 30,   # quick mode finishes in minutes
+        epochs=epochs,
         batch_size=64,
     )
     model, metrics = train_transformer(
@@ -271,7 +284,10 @@ def step_train_transformer(
 def step_train_autoencoder(
     embeddings: np.ndarray, labels: np.ndarray, *,
     artifact_dir: Path, device: str, rebuild: bool, sample_mode: bool,
+    epochs_override: int | None = None,
 ) -> dict:
+    """Train + save the AE. `epochs_override` mirrors the transformer
+    helper for smoke runs."""
     _stamp("STEP 5 — train autoencoder")
     out = artifact_dir / "autoencoder.pt"
     metrics_out = artifact_dir / "autoencoder_metrics.json"
@@ -281,8 +297,14 @@ def step_train_autoencoder(
         with metrics_out.open("r", encoding="utf-8") as f:
             return json.load(f)
 
+    if epochs_override is not None:
+        epochs = epochs_override
+    elif sample_mode:
+        epochs = 10
+    else:
+        epochs = 50
     config = AETrainConfig(
-        epochs=10 if sample_mode else 50,
+        epochs=epochs,
         batch_size=256,
     )
     model, metrics = train_autoencoder(

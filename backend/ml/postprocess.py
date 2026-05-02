@@ -4,14 +4,18 @@ object the API + websocket emit.
 
 Three things happen here:
 
-  1. Severity scoring — three rules, applied in order (per
-     docs/architecture/system_overview.md L115-118):
-       (a) `failure_probability > 0.75` AND source ∈ critical set → critical
-       (b) `ensemble_score > 0.85` → warning
-       (c) else → info
-     The thresholds are intentionally separate from the binary anomaly
-     gate (which lives in `Detector.is_anomaly`). The detector decides
-     IF an anomaly fires; this module decides HOW LOUDLY.
+  1. Severity scoring — three rules, applied in order:
+       (a) `ensemble_score > 0.85` AND source ∈ critical set → critical
+       (b) `ensemble_score > 0.75`                            → warning
+       (c) else                                                → info
+     Both critical and warning use the same signal (ensemble_score) so
+     the boundary between "page someone" and "log it for the dashboard"
+     is one number, not a juxtaposition of two different scores. The
+     thresholds are intentionally separate from the binary anomaly gate
+     (`Detector.is_anomaly`): the detector decides IF an anomaly fires;
+     this module decides HOW LOUDLY. Info fires for any window that
+     passed the detection gate but didn't reach the warning floor —
+     these surface in the dashboard timeline without paging.
 
   2. Deduplication — multiple windows from the same template + source
      within a 60-second window collapse into one cluster. Same
@@ -38,9 +42,18 @@ from api.schemas import Anomaly, ContributingLine, ExplanationStatus, Severity
 from ingestion.sequence_builder import Window
 from ml.detector import DetectionResult
 
-# Severity thresholds — see system_overview.md L115-118.
-CRITICAL_FAILURE_PROB = 0.75
-WARNING_ENSEMBLE_SCORE = 0.85
+# Severity thresholds.
+# Critical fires only when the ensemble is highly confident AND the
+# source matches operator-flagged critical infra. Warning catches
+# everything else above the operational concern level. Info captures
+# borderline detections worth surfacing in the timeline but not
+# paging anyone over.
+CRITICAL_ENSEMBLE_SCORE = 0.85
+WARNING_ENSEMBLE_SCORE = 0.75
+# Legacy alias kept so any external import of CRITICAL_FAILURE_PROB
+# (older runner versions, paper-side scripts) keeps working. Don't
+# add new uses — read CRITICAL_ENSEMBLE_SCORE instead.
+CRITICAL_FAILURE_PROB = CRITICAL_ENSEMBLE_SCORE
 
 # Dedup window — same (template, source) within this many seconds is the
 # same cluster. 60s mirrors the spec's design note.
@@ -110,7 +123,7 @@ def decide_severity(
     if critical_sources is None:
         critical_sources = get_critical_sources()
     if (
-        detection.transformer_prob > CRITICAL_FAILURE_PROB
+        detection.ensemble_score > CRITICAL_ENSEMBLE_SCORE
         and source in critical_sources
     ):
         return "critical"

@@ -15,6 +15,7 @@ import type {
   AnomalyListResponse,
   DriftStatus,
   Explanation,
+  FeedbackHistoryResponse,
   FeedbackRequest,
   FeedbackResponse,
   HealthResponse,
@@ -32,9 +33,10 @@ import {
   mockTimeline,
 } from "./mock";
 
-// Default true — pages get to render against fixtures from the moment they
-// land. Step 11 of the spec's build order flips this to false.
-const USE_MOCK = import.meta.env.VITE_USE_MOCK !== "false";
+// Default false — the live backend is the source of truth for the demo.
+// Set VITE_USE_MOCK=true in `.env.local` to force fixtures (handy when
+// the backend is offline for frontend-only work).
+const USE_MOCK = import.meta.env.VITE_USE_MOCK === "true";
 
 const BASE = "/api/v1";
 
@@ -168,6 +170,25 @@ export async function postFeedback(
   const { data } = await fetchJson<FeedbackResponse>(
     `/anomalies/${encodeURIComponent(id)}/feedback`,
     { method: "POST", body: JSON.stringify(body) },
+  );
+  return data!;
+}
+
+export async function listFeedback(
+  limit = 100,
+): Promise<FeedbackHistoryResponse> {
+  if (USE_MOCK) {
+    // No mock fixture exists for the history view — return an empty
+    // shape so the UI shows its empty-state instead of crashing.
+    return mockDelay({
+      items: [],
+      total: 0,
+      true_positive: 0,
+      false_positive: 0,
+    });
+  }
+  const { data } = await fetchJson<FeedbackHistoryResponse>(
+    `/feedback?limit=${encodeURIComponent(limit)}`,
   );
   return data!;
 }
