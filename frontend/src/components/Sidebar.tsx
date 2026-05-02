@@ -11,7 +11,7 @@ import {
   Upload,
   type LucideIcon,
 } from "lucide-react";
-import { NavLink, useNavigate } from "react-router-dom";
+import { Link, NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 import { cn } from "../lib/cn";
 import { Logo } from "./Logo";
@@ -96,13 +96,17 @@ export function Sidebar() {
 
   return (
     <aside className="fixed left-0 top-0 z-10 flex h-full w-[220px] flex-col border-r-[0.5px] border-border-subtle bg-sidebar">
-      {/* Brand */}
-      <div className="flex items-center gap-2 px-5 pb-8 pt-6 text-iris">
+      {/* Brand — clickable, routes to /dashboard */}
+      <Link
+        to="/dashboard"
+        className="flex items-center gap-2 px-5 pb-8 pt-6 text-iris transition-colors hover:text-iris-deep focus:outline-none focus-visible:rounded-md focus-visible:ring-1 focus-visible:ring-iris/40"
+        aria-label="Go to dashboard"
+      >
         <Logo size={20} />
         <span className="text-[15px] font-medium tracking-tight text-primary">
           LogGuard
         </span>
-      </div>
+      </Link>
 
       {/* Nav */}
       <nav className="flex-1 px-3">

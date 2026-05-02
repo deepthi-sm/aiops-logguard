@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import { useAnomalies, useDrift, useMetricsSummary } from "../api/queries";
 import { AnomalyFeedRow } from "../components/AnomalyFeedRow";
+import { ConfidenceChart } from "../components/ConfidenceChart";
 import { EmptyState } from "../components/EmptyState";
 import { ErrorState } from "../components/ErrorState";
 import { EyebrowLabel } from "../components/EyebrowLabel";
@@ -9,7 +10,7 @@ import { KpiCell } from "../components/KpiCell";
 import { Skeleton } from "../components/Skeleton";
 import { TimelineChart } from "../components/TimelineChart";
 import { cn } from "../lib/cn";
-import { formatScore } from "../lib/format";
+import { formatRelativeTime, formatScore } from "../lib/format";
 import { driftClassName, driftLabel } from "../lib/severity";
 import type { Anomaly, DriftStatus, MetricsSummary } from "../types";
 
@@ -36,16 +37,32 @@ export function Dashboard() {
   const summary = useMetricsSummary();
   const drift = useDrift();
   const recent = useAnomalies({ limit: 5 });
+  // For the confidence trend chart — last 100 anomalies, newest first.
+  const recentLarge = useAnomalies({ limit: 100 });
+
+  // The most recent successful refetch among the four queries — used by
+  // the header's "Updated X ago" line so it tracks reality, not a fixed
+  // string.
+  const lastUpdated = Math.max(
+    summary.dataUpdatedAt,
+    drift.dataUpdatedAt,
+    recent.dataUpdatedAt,
+    recentLarge.dataUpdatedAt,
+  );
 
   return (
     <div className="pb-12">
-      <Header />
+      <Header lastUpdatedMs={lastUpdated} />
       <KpiSection
         summary={summary.data}
         drift={drift.data}
         loading={summary.isLoading || drift.isLoading}
       />
       <TimelineChart />
+      <ConfidenceChart
+        items={recentLarge.data?.items ?? []}
+        loading={recentLarge.isLoading}
+      />
       <RecentActivity
         items={recent.data?.items ?? []}
         loading={recent.isLoading}
@@ -58,7 +75,13 @@ export function Dashboard() {
 
 // -- Header ----------------------------------------------------------------
 
-function Header() {
+function Header({ lastUpdatedMs }: { lastUpdatedMs: number }) {
+  // Fall back to "—" until at least one query has resolved (otherwise
+  // we'd flash "55 years ago" off the unix epoch).
+  const updatedLabel =
+    lastUpdatedMs > 0
+      ? `Updated ${formatRelativeTime(new Date(lastUpdatedMs).toISOString())}`
+      : "Updated —";
   return (
     <header className="mb-7 flex items-end justify-between border-b-[0.5px] border-border-subtle pb-5">
       <div>
@@ -68,7 +91,9 @@ function Header() {
         </h1>
       </div>
       <div className="flex items-center gap-2 text-[11px] text-tertiary">
-        <span>Updated just now</span>
+        <span title={lastUpdatedMs > 0 ? new Date(lastUpdatedMs).toLocaleString() : ""}>
+          {updatedLabel}
+        </span>
         <span aria-hidden>·</span>
         <span className="flex items-center gap-1.5">
           <span className="relative inline-flex h-1.5 w-1.5">
@@ -101,7 +126,6 @@ function KpiSection({
       <KpiCell
         eyebrow="Past 24 hours"
         value={<span className="font-mono">{summary.total_24h}</span>}
-        trend={<span className="text-success">↑ 12</span>}
         subLabel="total anomalies"
       />
       <KpiCell

@@ -2,13 +2,17 @@ import { useState } from "react";
 import {
   Bar,
   BarChart,
+  CartesianGrid,
   ResponsiveContainer,
   Tooltip,
+  XAxis,
+  YAxis,
   type TooltipProps,
 } from "recharts";
 import { useTimeline } from "../api/queries";
 import { cn } from "../lib/cn";
 import type { TimelineWindow } from "../types";
+import { EmptyState } from "./EmptyState";
 import { Skeleton } from "./Skeleton";
 
 const WINDOW_OPTIONS: { value: TimelineWindow; label: string }[] = [
@@ -47,20 +51,49 @@ export function TimelineChart() {
             Failed to load timeline.
           </div>
         )}
-        {data && data.buckets.length === 0 && (
-          <div className="flex h-[200px] items-center justify-center text-[12px] text-tertiary">
-            No activity in this window.
-          </div>
+        {data && allBucketsZero(data.buckets) && (
+          <EmptyState message="No anomalies recorded in this time window — system is healthy." />
         )}
-        {data && data.buckets.length > 0 && (
-          <div style={{ width: "100%", height: 200 }}>
+        {data && data.buckets.length > 0 && !allBucketsZero(data.buckets) && (
+          <div style={{ width: "100%", height: 220 }}>
             <ResponsiveContainer>
               <BarChart
                 data={data.buckets}
                 barCategoryGap={2}
-                margin={{ top: 4, right: 0, bottom: 0, left: 0 }}
+                margin={{ top: 8, right: 8, bottom: 4, left: 0 }}
               >
-                {/* Stack order is bottom→top, so info first, critical last. */}
+                <CartesianGrid
+                  strokeDasharray="3 3"
+                  stroke="var(--border-subtle)"
+                  vertical={false}
+                />
+                <XAxis
+                  dataKey="ts"
+                  stroke="var(--text-tertiary)"
+                  tick={{ fill: "var(--text-tertiary)", fontSize: 10 }}
+                  tickFormatter={(ts: string) => formatBucketTick(ts, window)}
+                  minTickGap={32}
+                  label={{
+                    value: window === "1h" ? "Time (UTC)" : "Bucket start (UTC)",
+                    position: "insideBottom",
+                    offset: -2,
+                    style: { fill: "var(--text-tertiary)", fontSize: 10 },
+                  }}
+                />
+                <YAxis
+                  stroke="var(--text-tertiary)"
+                  tick={{ fill: "var(--text-tertiary)", fontSize: 10 }}
+                  allowDecimals={false}
+                  width={36}
+                  label={{
+                    value: "Anomalies",
+                    angle: -90,
+                    position: "insideLeft",
+                    offset: 12,
+                    style: { fill: "var(--text-tertiary)", fontSize: 10 },
+                  }}
+                />
+                {/* Stack order is bottom -> top, so info first, critical last. */}
                 <Bar
                   dataKey="info"
                   stackId="a"
@@ -122,6 +155,23 @@ function WindowToggle({
     </div>
   );
 }
+
+function allBucketsZero(buckets: { critical: number; warning: number; info: number }[]) {
+  return buckets.every((b) => b.critical === 0 && b.warning === 0 && b.info === 0);
+}
+
+function formatBucketTick(ts: string, window: TimelineWindow): string {
+  const d = new Date(ts);
+  if (window === "1h") {
+    return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  }
+  if (window === "24h") {
+    return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  }
+  // 7d window
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
 
 function TimelineTooltip({ active, payload, label }: TooltipProps<number, string>) {
   if (!active || !payload || payload.length === 0) return null;

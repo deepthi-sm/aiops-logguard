@@ -81,6 +81,11 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   font-feature-settings: "cv11", "ss01";
+  /* Safety net against any element accidentally pushing wider than the
+     viewport (a 100vw section + side padding, an unbounded preview
+     image, a transform that overruns). The vertical scroll is already
+     visible; this only suppresses the horizontal one. */
+  overflow-x: hidden;
 }
 
 /* Tabular numerics on data — applied per-element via the `tabular-nums`
