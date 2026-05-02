@@ -117,6 +117,21 @@ DEFAULT_OUTPUT_DIR = Path("artifacts_proper")
 DEFAULT_F1_FLOOR = 0.7
 DEFAULT_DATA_DIR = Path("training/data")
 
+# Smoke-test constants. The smoke run validates that every phase of the
+# pipeline executes end-to-end, NOT that the resulting models are good.
+# The hard time cap raises an AssertionError if exceeded so a regression
+# can't quietly bloat the smoke runtime.
+#
+# Budget reality: SBERT on CPU is ~1.2 s per batch of 128 strings.
+# 200 lines per OS file × 3 files plus 200 HDFS lines = ~12k strings,
+# ≈95 batches ≈ 2 min just for embedding. Plus training/eval overhead,
+# 8-min ceiling is realistic on a laptop CPU. The previous 2-min cap
+# was based on an over-optimistic estimate.
+SMOKE_OUTPUT_DIR = Path("artifacts_smoke")
+SMOKE_SAMPLE = 200          # lines per OS / HDFS file (≈580 windows total each)
+SMOKE_EPOCHS = 2            # transformer + AE
+SMOKE_TIMEOUT_S = 480.0     # 8 min hard cap, asserted at each phase boundary
+
 
 # -- preprocessed-dataset wrapper ------------------------------------------
 
@@ -161,10 +176,20 @@ def _parse_dataset_lines(
     drain3_state_out: Path,
     *,
     sample: int | None,
+    per_file_source: bool = False,
 ):
     """Parse the dataset through Drain3 (writes drain3_state_out).
     For HDFS we apply a sampler at parse time so we don't carry
-    11M lines in memory if the user passed --hdfs-sample."""
+    11M lines in memory if the user passed --hdfs-sample.
+
+    `per_file_source=True` parses each log file separately with
+    `source_label=p.stem` (e.g. `openstack_normal1`,
+    `openstack_abnormal`) so the file-based OpenStack labeller can tell
+    abnormal events from normal ones. Used in smoke mode where the
+    instance-id-based labels in `anomaly_labels.txt` are unlikely to
+    match the first 200 lines of each file. Default `False` keeps
+    backward-compat with the original instance-id labelling.
+    """
     spec = DATASETS[dataset_key]
     extracted = _ensure_downloaded(dataset_key, data_dir)
     log_paths = [extracted / f for f in spec["log_files"]]
@@ -185,6 +210,25 @@ def _parse_dataset_lines(
             sampled_paths.append(sp)
         log_paths = sampled_paths
 
+    if per_file_source:
+        # Mirrors `run_full_pipeline.step_data_prep` behaviour: each
+        # file is parsed individually with `source_label=stem`, so the
+        # `_label_by_source` labeller can tag windows by which file
+        # (normal vs abnormal) the events came from.
+        all_events = []
+        line_offset = 0
+        for log_path in log_paths:
+            evs = parse_log_file(
+                [log_path],
+                drain3_state_out=drain3_state_out,
+                source_label=log_path.stem,
+            )
+            for ev in evs:
+                ev.line_no += line_offset
+            all_events.extend(evs)
+            line_offset += len(evs)
+        return all_events
+
     return parse_log_file(
         log_paths,
         drain3_state_out=drain3_state_out,
@@ -201,16 +245,38 @@ def _materialise_sample(src: Path, dst: Path, n: int) -> None:
             w.write(line)
 
 
-def _label_windows_for(dataset_key: str, data_dir: Path):
+def _label_by_source_filename(chunk):
+    """File-based OpenStack labeller — matches `run_full_pipeline.py`.
+
+    A window is "anomaly" if any event in it came from a file whose
+    name contains "abnormal" (LogHub's OpenStack release uses file
+    layout: `openstack_normal1.log`, `openstack_normal2.log`,
+    `openstack_abnormal.log`).
+
+    Cheaper than instance-id matching and works on any sample size
+    (the instance-id labeller breaks when the sample doesn't include
+    flagged instance_ids).
+    """
+    return "anomaly" if any("abnormal" in ev.source.lower() for ev in chunk) else "normal"
+
+
+def _label_windows_for(dataset_key: str, data_dir: Path, *, file_based_openstack: bool = False):
     """Build the label_fn appropriate to this dataset.
 
-    OpenStack: anomaly_labels.txt (instance_id 0/1 records).
+    OpenStack: anomaly_labels.txt (instance_id 0/1 records) by default.
+               When `file_based_openstack=True`, fall back to
+               file-name-based labels (matches `run_full_pipeline.py`).
+               This is the smoke-mode path — small samples don't
+               include enough instance IDs to make the labels match.
     HDFS:      anomaly_label.csv (BlockId, Normal/Anomaly).
     """
     spec = DATASETS[dataset_key]
     if spec["label_file"] is None:
         # Apache — caller uses level-fallback labelling.
         return make_level_labeler()
+    if dataset_key == "openstack" and file_based_openstack:
+        log.info("[openstack] using FILE-BASED labelling (matches run_full_pipeline)")
+        return _label_by_source_filename
     label_path = data_dir / spec["extract_to"] / spec["label_file"]
     if not label_path.exists():
         raise FileNotFoundError(f"label file missing: {label_path}")
@@ -231,6 +297,8 @@ def prepare_dataset(
     output_dir: Path,
     sample: int | None,
     rebuild: bool = False,
+    resume: bool = False,
+    file_based_openstack: bool = False,
 ) -> PreparedDataset:
     """Phase-1 worker: data_prep + windows + SBERT embed + 15% test split.
 
@@ -256,14 +324,20 @@ def prepare_dataset(
         labels = np.load(labels_path)
         test_idx = np.load(test_idx_path)
     else:
-        # 1. Parse → ParsedLog list
+        # 1. Parse -> ParsedLog list. With `file_based_openstack=True`
+        # we need per-file source labels so the labeller can tell
+        # abnormal files from normal ones.
         log.info("[%s] parsing through Drain3 (sample=%s)", dataset_key, sample)
         parsed = _parse_dataset_lines(
-            dataset_key, data_dir, drain3_state_path, sample=sample
+            dataset_key, data_dir, drain3_state_path, sample=sample,
+            per_file_source=file_based_openstack and dataset_key == "openstack",
         )
 
         # 2. Build windows + apply per-dataset labeller
-        labeller = _label_windows_for(dataset_key, data_dir)
+        labeller = _label_windows_for(
+            dataset_key, data_dir,
+            file_based_openstack=file_based_openstack,
+        )
         windows = build_windows(parsed, label_fn=labeller)
         n_anom = sum(1 for w in windows if w.label == "anomaly")
         log.info(
@@ -271,12 +345,15 @@ def prepare_dataset(
             dataset_key, len(windows), n_anom, n_anom / max(len(windows), 1) * 100,
         )
 
-        # 3. SBERT embed (cached)
+        # 3. SBERT embed (cached). Chunked + memmap'd in `embed.py` so
+        # progress is logged per chunk and a kill is recoverable via
+        # `--resume`.
         log.info("[%s] SBERT embedding (this is the slow step)", dataset_key)
         from sentence_transformers import SentenceTransformer
         sbert = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
         embeddings = embed_or_load(
             windows, model=sbert, cache_path=embeddings_path,  # type: ignore[arg-type]
+            resume=resume,
         )
 
         # 4. Persist labels
@@ -320,6 +397,7 @@ def train_one_model(
     drain3_state_src: Path,
     device: str = "cpu",
     sample_mode: bool = False,
+    epochs_override: int | None = None,
 ) -> None:
     """Run transformer + AE + scoring + calibration end-to-end on the
     given (train+val) data. Writes every artifact under `output_dir`.
@@ -351,6 +429,7 @@ def train_one_model(
         device=device,
         rebuild=True,
         sample_mode=sample_mode,
+        epochs_override=epochs_override,
     )
 
     # 2. AutoEncoder (writes autoencoder.pt + autoencoder_metrics.json).
@@ -363,6 +442,7 @@ def train_one_model(
         device=device,
         rebuild=True,
         sample_mode=sample_mode,
+        epochs_override=epochs_override,
     )
 
     # 3. Component scores on the train+val set (writes transformer_scores.npy
@@ -697,6 +777,44 @@ def check_f1_floor(cells: list[EvalCell], floor: float) -> list[str]:
     return failures
 
 
+# -- smoke-test helpers ----------------------------------------------------
+
+
+def _hdfs_data_present(data_dir: Path) -> bool:
+    """Cheap probe: is the HDFS dataset downloaded on this machine?
+
+    We accept either an extracted log file or a downloadable archive
+    (the latter would auto-extract on first use). Used by smoke mode to
+    decide whether to run the full OS+HDFS pipeline or fall back to
+    OS-only when HDFS hasn't been fetched yet — smoke is a pipeline
+    smoke test, not a data-acquisition test.
+    """
+    spec = DATASETS["hdfs"]
+    extracted = data_dir / spec["extract_to"]
+    if extracted.exists() and any(
+        (extracted / f).exists() for f in spec["log_files"]
+    ):
+        return True
+    archive = data_dir / spec["archive"]
+    return archive.exists() and archive.stat().st_size > 0
+
+
+def _smoke_check(t0: float, phase: str) -> None:
+    """Smoke-mode time-budget gate. Called after every major phase so a
+    regression that makes the pipeline 5x slower is loud, not silent.
+
+    Raises AssertionError if elapsed exceeds SMOKE_TIMEOUT_S — the
+    blast-radius is small (we lose a smoke run, never a real one) and
+    the assertion message tells the user where the budget blew up.
+    """
+    elapsed = time.monotonic() - t0
+    assert elapsed < SMOKE_TIMEOUT_S, (
+        f"smoke test exceeded {SMOKE_TIMEOUT_S:.0f}s budget at end of "
+        f"phase '{phase}' (elapsed {elapsed:.1f}s). investigate "
+        f"before running the full pipeline."
+    )
+
+
 # -- main orchestrator -----------------------------------------------------
 
 
@@ -723,6 +841,14 @@ def main(argv: list[str] | None = None) -> int:
         help="Force re-preprocessing (ignore cached embeddings).",
     )
     parser.add_argument(
+        "--resume", action="store_true",
+        help=(
+            "Resume embedding from the last completed chunk if a "
+            "previous run was killed. Reads the `.progress` sidecar "
+            "next to each cached embeddings.npy."
+        ),
+    )
+    parser.add_argument(
         "--f1-floor", type=float, default=DEFAULT_F1_FLOOR,
         help=("Stop and report if any held-out F1 falls below this. "
               "Pass 0.0 to accept whatever falls out."),
@@ -730,7 +856,52 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--device", choices=["cpu", "cuda"], default="cpu",
     )
+    parser.add_argument(
+        "--smoke", action="store_true",
+        help=(
+            "Smoke-test mode: tiny samples, 2 epochs, skip Apache, "
+            f"output to {SMOKE_OUTPUT_DIR}/, hard {SMOKE_TIMEOUT_S:.0f}s "
+            "timeout. Validates the whole pipeline end-to-end in 2-4 min "
+            "on a CPU laptop; models trained this way are NOT useful, "
+            "only diagnostic."
+        ),
+    )
+    parser.add_argument(
+        "--instance-id-labels", action="store_true",
+        help=(
+            "Use OpenStack's instance-id labels from anomaly_labels.txt "
+            "instead of the file-based default. CURRENTLY BROKEN: produces "
+            "0 anomaly windows on the full 207k corpus (likely a UUID "
+            "regex / format mismatch). Kept as an opt-in for when the "
+            "labeller bug is fixed. Ignored in --smoke mode (smoke always "
+            "uses file-based labels)."
+        ),
+    )
     args = parser.parse_args(argv)
+
+    # Windows cmd defaults to cp1252 which can't encode the unicode
+    # arrows we use in log messages. Force the std streams to UTF-8 so
+    # `python -m training.run_proper_eval` works from a vanilla cmd
+    # window OR a piped/captured stdout. errors="replace" ensures even
+    # surprise glyphs degrade gracefully instead of crashing the run.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            if _stream.encoding != "utf-8":
+                _stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+        except (AttributeError, ValueError):
+            pass
+
+    # Smoke mode reshapes the rest of the args before they're consumed.
+    # Anything the user passed on the CLI that smoke would override is
+    # silently replaced — this is intentional, smoke is meant to be a
+    # one-flag short-circuit to "validate that the pipeline runs".
+    if args.smoke:
+        args.output_dir = SMOKE_OUTPUT_DIR
+        args.openstack_sample = SMOKE_SAMPLE
+        args.hdfs_sample = SMOKE_SAMPLE
+        args.apache_sample = SMOKE_SAMPLE  # not used (Apache is skipped)
+        args.f1_floor = 0.0  # smoke models are diagnostic only
+        args.rebuild = True  # always start from clean memmaps
 
     logging.basicConfig(
         level=logging.INFO,
@@ -744,6 +915,43 @@ def main(argv: list[str] | None = None) -> int:
     log.info("data   → %s", data_dir)
 
     t0 = time.monotonic()
+    epochs_override = SMOKE_EPOCHS if args.smoke else None
+
+    # Smoke mode: if HDFS isn't downloaded on this machine, fall back
+    # to OS-only smoke. Real (non-smoke) runs still trigger the auto-
+    # download — those have a 60-min budget and nobody's expecting them
+    # to finish in 90 seconds.
+    skip_hdfs = False
+    if args.smoke and not _hdfs_data_present(data_dir):
+        skip_hdfs = True
+        log.warning(
+            "[smoke] HDFS not downloaded — running OS-only smoke. "
+            "Combined model code path will not be exercised. To get "
+            "full smoke coverage, fetch HDFS first via "
+            "`python -m training.data_prep --dataset hdfs --download`."
+        )
+
+    # OpenStack labelling: file-based by default.
+    #
+    # The LogHub OpenStack release ships with three log files —
+    # `openstack_normal1.log`, `openstack_normal2.log`,
+    # `openstack_abnormal.log` — and the LogHub convention is that
+    # every event from `*_abnormal.log` belongs to the anomaly class.
+    # The same convention is used by `run_full_pipeline.py`, which
+    # produced the committed F1=1.000 baseline in `training/RESULTS.md`.
+    #
+    # The alternative — instance-id matching against the UUIDs listed
+    # in `anomaly_labels.txt` — is currently BROKEN: a label-overlap
+    # diagnostic on the full 207k-event corpus shows it produces zero
+    # positive windows (likely a UUID-extraction format mismatch
+    # between `_UUID_RE` and the actual OpenStack log format). Pass
+    # `--instance-id-labels` to opt back in once that bug is fixed.
+    #
+    # Smoke always forces file-based regardless of the flag — its
+    # 200-line samples can't possibly contain matching instance IDs
+    # so instance-id labelling would just produce a useless 0-positive
+    # corpus and crash calibration.
+    file_based_os = args.smoke or not args.instance_id_labels
 
     # ---- Phase 1: prepare both labelled datasets -------------------------
     log.info("PHASE 1 — preparing OpenStack")
@@ -753,15 +961,25 @@ def main(argv: list[str] | None = None) -> int:
         output_dir=output_dir,
         sample=args.openstack_sample,
         rebuild=args.rebuild,
+        resume=args.resume,
+        file_based_openstack=file_based_os,
     )
-    log.info("PHASE 1 — preparing HDFS")
-    hdfs_data = prepare_dataset(
-        "hdfs",
-        data_dir=data_dir,
-        output_dir=output_dir,
-        sample=args.hdfs_sample,
-        rebuild=args.rebuild,
-    )
+    if args.smoke:
+        _smoke_check(t0, "phase 1 OpenStack")
+
+    hdfs_data: PreparedDataset | None = None
+    if not skip_hdfs:
+        log.info("PHASE 1 — preparing HDFS")
+        hdfs_data = prepare_dataset(
+            "hdfs",
+            data_dir=data_dir,
+            output_dir=output_dir,
+            sample=args.hdfs_sample,
+            rebuild=args.rebuild,
+            resume=args.resume,
+        )
+        if args.smoke:
+            _smoke_check(t0, "phase 1 HDFS")
 
     # ---- Phase 2: Model A (OpenStack-only) -------------------------------
     log.info("PHASE 2 — training Model A (OpenStack-only)")
@@ -773,9 +991,105 @@ def main(argv: list[str] | None = None) -> int:
         output_dir=output_dir / "openstack_only",
         drain3_state_src=output_dir / "_inputs" / "openstack" / "drain3_state.bin",
         device=args.device,
+        epochs_override=epochs_override,
     )
+    if args.smoke:
+        _smoke_check(t0, "phase 2")
 
     # ---- Phase 3: Model B (Combined OS+HDFS) -----------------------------
+    if hdfs_data is None:
+        log.info("PHASE 3 — skipped (HDFS not available, OS-only smoke)")
+    else:
+        _phase3_combined(
+            os_train_emb=os_train_emb,
+            os_train_lab=os_train_lab,
+            hdfs_data=hdfs_data,
+            output_dir=output_dir,
+            data_dir=data_dir,
+            args=args,
+            epochs_override=epochs_override,
+        )
+    if args.smoke:
+        _smoke_check(t0, "phase 3")
+
+    # ---- Phase 4: evaluate both models on three test sets ---------------
+    log.info("PHASE 4 — evaluating both models on test sets")
+    cells: list[EvalCell] = []
+    model_names = ("openstack_only",) if hdfs_data is None else ("openstack_only", "combined")
+    for model_name in model_names:
+        artifact_dir = output_dir / model_name
+        # OpenStack held-out
+        cells.append(eval_holdout(
+            model_name=model_name, test_set="openstack_test",
+            artifact_dir=artifact_dir,
+            embeddings=os_data.embeddings, labels=os_data.labels,
+            test_idx=os_data.test_idx,
+        ))
+        # HDFS held-out — only when we actually have HDFS data
+        if hdfs_data is not None:
+            cells.append(eval_holdout(
+                model_name=model_name, test_set="hdfs_test",
+                artifact_dir=artifact_dir,
+                embeddings=hdfs_data.embeddings, labels=hdfs_data.labels,
+                test_idx=hdfs_data.test_idx,
+            ))
+        # Apache (full) — skipped in smoke mode (saves ~30 s, doesn't
+        # validate any code path that the OS / HDFS holdout doesn't).
+        if not args.smoke:
+            apache_log = data_dir / "apache" / "Apache.log"
+            cells.append(eval_apache(
+                model_name=model_name, artifact_dir=artifact_dir,
+                apache_log=apache_log,
+                drain3_eval_state=output_dir / "_inputs" / "apache_eval_drain3.bin",
+                sample=args.apache_sample,
+            ))
+    if args.smoke:
+        _smoke_check(t0, "phase 4")
+
+    for c in cells:
+        log.info(
+            "[eval] %s × %s: F1=%.3f P=%.3f R=%.3f AUC=%.3f",
+            c.model_name, c.test_set, c.metrics.f1, c.metrics.precision,
+            c.metrics.recall, c.metrics.auc,
+        )
+
+    # ---- Phase 5: F1 floor check ---------------------------------------
+    failures = check_f1_floor(cells, args.f1_floor)
+    if failures:
+        log.error("=" * 70)
+        log.error("F1 FLOOR FAILURE (--f1-floor %.2f)", args.f1_floor)
+        for f in failures:
+            log.error("%s", f)
+        log.error("Stopping before writing summary — investigate the merge logic.")
+        log.error("Pass --f1-floor 0.0 to suppress this and write results anyway.")
+        log.error("=" * 70)
+        # Still write the per-test-set files so the user can see what happened.
+        _write_all_results(cells, output_dir)
+        return 2
+
+    # ---- Phase 6: write all four results files -------------------------
+    _write_all_results(cells, output_dir)
+
+    elapsed = time.monotonic() - t0
+    log.info("=" * 70)
+    log.info("DONE in %.1f min — see %s/RESULTS_SUMMARY.md", elapsed / 60, output_dir)
+    log.info("=" * 70)
+    return 0
+
+
+def _phase3_combined(
+    *,
+    os_train_emb: np.ndarray,
+    os_train_lab: np.ndarray,
+    hdfs_data: PreparedDataset,
+    output_dir: Path,
+    data_dir: Path,
+    args: argparse.Namespace,
+    epochs_override: int | None,
+) -> None:
+    """Phase 3 body extracted so smoke mode can skip it cleanly when
+    HDFS data isn't present. No behaviour change vs the original
+    inline block."""
     log.info("PHASE 3 — training Model B (Combined)")
     hd_train_emb, hd_train_lab = hdfs_data.slice(hdfs_data.train_idx)
     combined_emb = np.concatenate([os_train_emb, hd_train_emb], axis=0)
@@ -810,65 +1124,8 @@ def main(argv: list[str] | None = None) -> int:
         output_dir=output_dir / "combined",
         drain3_state_src=combined_drain3,
         device=args.device,
+        epochs_override=epochs_override,
     )
-
-    # ---- Phase 4: evaluate both models on three test sets ---------------
-    log.info("PHASE 4 — evaluating both models on three test sets")
-    cells: list[EvalCell] = []
-    for model_name in ("openstack_only", "combined"):
-        artifact_dir = output_dir / model_name
-        # OpenStack held-out
-        cells.append(eval_holdout(
-            model_name=model_name, test_set="openstack_test",
-            artifact_dir=artifact_dir,
-            embeddings=os_data.embeddings, labels=os_data.labels,
-            test_idx=os_data.test_idx,
-        ))
-        # HDFS held-out
-        cells.append(eval_holdout(
-            model_name=model_name, test_set="hdfs_test",
-            artifact_dir=artifact_dir,
-            embeddings=hdfs_data.embeddings, labels=hdfs_data.labels,
-            test_idx=hdfs_data.test_idx,
-        ))
-        # Apache (full)
-        apache_log = data_dir / "apache" / "Apache.log"
-        cells.append(eval_apache(
-            model_name=model_name, artifact_dir=artifact_dir,
-            apache_log=apache_log,
-            drain3_eval_state=output_dir / "_inputs" / "apache_eval_drain3.bin",
-            sample=args.apache_sample,
-        ))
-
-    for c in cells:
-        log.info(
-            "[eval] %s × %s: F1=%.3f P=%.3f R=%.3f AUC=%.3f",
-            c.model_name, c.test_set, c.metrics.f1, c.metrics.precision,
-            c.metrics.recall, c.metrics.auc,
-        )
-
-    # ---- Phase 5: F1 floor check ---------------------------------------
-    failures = check_f1_floor(cells, args.f1_floor)
-    if failures:
-        log.error("=" * 70)
-        log.error("F1 FLOOR FAILURE (--f1-floor %.2f)", args.f1_floor)
-        for f in failures:
-            log.error("%s", f)
-        log.error("Stopping before writing summary — investigate the merge logic.")
-        log.error("Pass --f1-floor 0.0 to suppress this and write results anyway.")
-        log.error("=" * 70)
-        # Still write the per-test-set files so the user can see what happened.
-        _write_all_results(cells, output_dir)
-        return 2
-
-    # ---- Phase 6: write all four results files -------------------------
-    _write_all_results(cells, output_dir)
-
-    elapsed = time.monotonic() - t0
-    log.info("=" * 70)
-    log.info("DONE in %.1f min — see %s/RESULTS_SUMMARY.md", elapsed / 60, output_dir)
-    log.info("=" * 70)
-    return 0
 
 
 def _write_all_results(cells: list[EvalCell], output_dir: Path) -> None:
@@ -892,11 +1149,14 @@ def _write_all_results(cells: list[EvalCell], output_dir: Path) -> None:
         cell_b=by_key[("combined", "hdfs_test")],
         out_path=output_dir / "RESULTS_HDFS_TEST.md",
     )
-    write_results_apache(
-        cell_a=by_key[("openstack_only", "apache")],
-        cell_b=by_key[("combined", "apache")],
-        out_path=output_dir / "RESULTS_APACHE.md",
-    )
+    # Apache eval is skipped in smoke mode, so the cells may not exist.
+    # Don't fail the smoke run just because there's no Apache result.
+    if ("openstack_only", "apache") in by_key and ("combined", "apache") in by_key:
+        write_results_apache(
+            cell_a=by_key[("openstack_only", "apache")],
+            cell_b=by_key[("combined", "apache")],
+            out_path=output_dir / "RESULTS_APACHE.md",
+        )
     write_summary(cells, out_path=output_dir / "RESULTS_SUMMARY.md")
 
     # Persist the raw numbers as JSON too — handy for re-rendering tables

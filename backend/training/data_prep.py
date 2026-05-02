@@ -34,8 +34,10 @@ from __future__ import annotations
 
 import argparse
 import re
+import socket
 import sys
 import tarfile
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Iterable
@@ -118,41 +120,154 @@ def normalise_template(template: str) -> str:
 
 # -- Download + extract -----------------------------------------------------
 
-def download(url: str, dest: Path, *, timeout: int = 60) -> None:
-    """Stream `url` into `dest`. Idempotent: skips if dest exists and is non-empty."""
+# Download timing constants. The pre-fix version of `download()` had a
+# 60 s handshake timeout but no per-chunk timeout, so a stalled TCP
+# connection mid-stream could hang the process for hours with no log
+# output. These constants harden against that:
+#
+#   - PER_CHUNK_TIMEOUT_S: every `r.read()` call must complete inside
+#     this budget (set as the socket-level timeout). If the server stops
+#     sending bytes, the read raises socket.timeout instead of blocking
+#     forever.
+#   - DOWNLOAD_MAX_RETRIES: exponential-backoff retry budget. A flaky
+#     connection drops to retry; permanent failure is a real error.
+#   - DOWNLOAD_TOTAL_TIMEOUT_S: hard wall-clock cap so a download that's
+#     making slow progress still terminates inside a known budget.
+PER_CHUNK_TIMEOUT_S = 30
+DOWNLOAD_MAX_RETRIES = 3
+DOWNLOAD_TOTAL_TIMEOUT_S = 60 * 60  # 60 minutes
+
+
+def download(
+    url: str,
+    dest: Path,
+    *,
+    handshake_timeout: int = 60,
+    per_chunk_timeout: int = PER_CHUNK_TIMEOUT_S,
+    max_retries: int = DOWNLOAD_MAX_RETRIES,
+    total_timeout: int = DOWNLOAD_TOTAL_TIMEOUT_S,
+) -> None:
+    """Stream `url` into `dest`, chunked, with per-read timeouts + retry.
+
+    Idempotent: skips if `dest` exists and is non-empty. On a fresh run
+    the file is opened `wb`. On retry after a partial failure the
+    function reopens with HTTP `Range: bytes=N-` and appends, so the
+    bytes already on disk aren't refetched.
+
+    Each `r.read()` is bounded by `per_chunk_timeout` (set as the socket
+    timeout), so a stalled connection raises `socket.timeout` instead of
+    blocking forever. Up to `max_retries` attempts with exponential
+    backoff (2 s, 4 s, 8 s). Hard `AssertionError` if the entire
+    download exceeds `total_timeout`.
+    """
     if dest.exists() and dest.stat().st_size > 0:
         print(f"[skip] already downloaded: {dest.name} ({dest.stat().st_size / 1e6:.1f} MB)")
         return
     dest.parent.mkdir(parents=True, exist_ok=True)
-    print(f"[download] {url}\n         → {dest}")
+    print(f"[download] {url}\n         -> {dest}")
+
+    overall_t0 = time.monotonic()
+    chunk_size = 1 << 14  # 16 KB
+    bytes_so_far = 0  # we never have a half-file at this point (idempotent guard above)
+    total: int | None = None
+    last_progress_pct = -1.0
+    attempt = 0
+
+    while True:
+        attempt += 1
+        try:
+            req = urllib.request.Request(url)
+            if bytes_so_far > 0:
+                # Resume from where the previous attempt died.
+                req.add_header("Range", f"bytes={bytes_so_far}-")
+
+            # `handshake_timeout` covers the connect + headers exchange.
+            # We replace it with `per_chunk_timeout` on the live socket
+            # immediately afterwards so subsequent reads have the
+            # tighter bound.
+            with urllib.request.urlopen(req, timeout=handshake_timeout) as r:
+                # Tighten the socket timeout for the body read loop.
+                _set_response_timeout(r, per_chunk_timeout)
+
+                if total is None:
+                    # First successful handshake — record total size.
+                    cl = r.headers.get("Content-Length", "0") or "0"
+                    body_size = int(cl)
+                    if r.status == 206:
+                        # Partial content: Content-Length is the remaining bytes.
+                        total = bytes_so_far + body_size
+                    else:
+                        total = body_size
+
+                file_mode = "ab" if bytes_so_far > 0 else "wb"
+                with open(dest, file_mode) as f:
+                    while True:
+                        elapsed = time.monotonic() - overall_t0
+                        if elapsed > total_timeout:
+                            raise AssertionError(
+                                f"download exceeded {total_timeout}s "
+                                f"({total_timeout / 60:.0f} min) total budget; "
+                                f"got {bytes_so_far / 1e6:.1f} MB so far."
+                            )
+                        buf = r.read(chunk_size)
+                        if not buf:
+                            break
+                        f.write(buf)
+                        bytes_so_far += len(buf)
+                        if total:
+                            pct = bytes_so_far / total * 100
+                            # Throttle progress prints so we don't spam logs
+                            # for fast connections — only update on whole-percent
+                            # boundaries.
+                            if pct - last_progress_pct >= 1.0 or pct >= 100.0:
+                                print(
+                                    f"\r          {bytes_so_far / 1e6:6.1f} / "
+                                    f"{total / 1e6:6.1f} MB ({pct:5.1f}%)",
+                                    end="",
+                                    flush=True,
+                                )
+                                last_progress_pct = pct
+
+            print()  # newline after the \r progress line
+            return
+
+        except AssertionError:
+            # Hard timeout — don't retry, just propagate. The half-written
+            # file is left intact so a future `--resume` style run could
+            # in theory continue, but for now we leave it for the user.
+            raise
+
+        except (urllib.error.URLError, TimeoutError, socket.timeout, ConnectionError) as e:
+            print()  # newline after any \r progress
+            print(f"[download] attempt {attempt}/{max_retries} failed at "
+                  f"{bytes_so_far / 1e6:.1f} MB: {type(e).__name__}: {e}")
+            if attempt >= max_retries:
+                if dest.exists() and bytes_so_far == 0:
+                    # Nothing useful saved — clean up so a re-run starts fresh.
+                    dest.unlink()
+                raise RuntimeError(
+                    f"download failed after {max_retries} attempts: {url}\n"
+                    f"  Got {bytes_so_far / 1e6:.1f} MB before giving up.\n"
+                    f"  Check internet connectivity, or download {dest.name} "
+                    f"manually from {LOGHUB_ZENODO_BASE} and place it at {dest}."
+                ) from e
+            backoff = 2 ** attempt  # 2 s, 4 s, 8 s
+            print(f"[download] retrying in {backoff}s with Range: bytes={bytes_so_far}-")
+            time.sleep(backoff)
+
+
+def _set_response_timeout(response, timeout_s: float) -> None:
+    """Best-effort tighten the underlying socket's recv timeout on an
+    already-opened HTTPResponse. urllib doesn't expose this directly, so
+    we reach into `.fp` (BufferedReader → SocketIO → socket). If the
+    structure changes in some future Python, we silently fall back to
+    the handshake-level timeout that was set at urlopen.
+    """
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as r, open(dest, "wb") as f:
-            total = int(r.headers.get("Content-Length", "0") or "0")
-            chunk_size = 1 << 14  # 16 KB
-            seen = 0
-            while True:
-                buf = r.read(chunk_size)
-                if not buf:
-                    break
-                f.write(buf)
-                seen += len(buf)
-                if total:
-                    pct = seen / total * 100
-                    print(
-                        f"\r          {seen / 1e6:6.1f} / {total / 1e6:6.1f} MB ({pct:5.1f}%)",
-                        end="",
-                        flush=True,
-                    )
-            print()
-    except (urllib.error.URLError, TimeoutError) as e:
-        # Don't leave a half-written file behind — re-run --download will think it's done.
-        if dest.exists():
-            dest.unlink()
-        raise RuntimeError(
-            f"download failed: {url}\n"
-            f"  Check internet connectivity, or download {dest.name} manually from {LOGHUB_ZENODO_BASE} "
-            f"and place it at {dest}."
-        ) from e
+        sock = response.fp.raw._sock  # type: ignore[attr-defined]
+        sock.settimeout(timeout_s)
+    except AttributeError:
+        pass
 
 
 def extract_tar_gz(archive: Path, target_dir: Path) -> None:
@@ -161,7 +276,7 @@ def extract_tar_gz(archive: Path, target_dir: Path) -> None:
         print(f"[skip] already extracted: {target_dir}")
         return
     target_dir.mkdir(parents=True, exist_ok=True)
-    print(f"[extract] {archive.name} → {target_dir}")
+    print(f"[extract] {archive.name} -> {target_dir}")
     with tarfile.open(archive, "r:gz") as tar:
         # filter='data' rejects unsafe members (absolute paths, .., devices) — Python 3.11.4+.
         tar.extractall(target_dir, filter="data")
@@ -239,8 +354,8 @@ def parse_log_file(
 
     miner.save_state("data_prep finalize")
     print(
-        f"[done] {line_no:,} lines → {len(miner.drain.clusters)} templates "
-        f"→ saved {drain3_state_out}"
+        f"[done] {line_no:,} lines -> {len(miner.drain.clusters)} templates "
+        f"-> saved {drain3_state_out}"
     )
     return parsed
 
@@ -266,6 +381,15 @@ def _resolve_paths(args: argparse.Namespace) -> tuple[Path, Path, dict]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Windows cmd defaults to cp1252; reconfigure to UTF-8 so unicode
+    # progress/log lines don't crash on a non-utf8 console or pipe.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            if _stream.encoding != "utf-8":
+                _stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+        except (AttributeError, ValueError):
+            pass
+
     parser = argparse.ArgumentParser(
         description="Download + Drain3-parse a LogHub web-application-backend log dataset.",
     )
