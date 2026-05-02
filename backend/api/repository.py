@@ -63,7 +63,7 @@ def _coerce_jsonb(value: Any) -> Any:
     see a string; otherwise return as-is. Idempotent for already-decoded
     values.
     """
-    if isinstance(value, (str, bytes, bytearray)):
+    if isinstance(value, str | bytes | bytearray):
         try:
             return json.loads(value)
         except (TypeError, ValueError):

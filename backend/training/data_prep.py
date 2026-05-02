@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import argparse
 import re
-import socket
 import sys
 import tarfile
 import time
@@ -237,7 +236,10 @@ def download(
             # in theory continue, but for now we leave it for the user.
             raise
 
-        except (urllib.error.URLError, TimeoutError, socket.timeout, ConnectionError) as e:
+        # `socket.timeout` is an alias for `TimeoutError` since 3.10, so
+        # listing both is redundant — the builtin covers all socket-level
+        # read timeouts plus our own AssertionError-bypass below.
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
             print()  # newline after any \r progress
             print(f"[download] attempt {attempt}/{max_retries} failed at "
                   f"{bytes_so_far / 1e6:.1f} MB: {type(e).__name__}: {e}")

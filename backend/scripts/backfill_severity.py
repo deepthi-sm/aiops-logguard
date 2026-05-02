@@ -64,7 +64,11 @@ for _stream in (sys.stdout, sys.stderr):
     except (AttributeError, ValueError):
         pass
 
-from ml.postprocess import (
+# Imports below the stream reconfig must wait until after stdout/stderr
+# are UTF-8-clean — `ml.postprocess` indirectly imports torch via the
+# detector chain, and torch's lazy CUDA-init prints can crash the
+# console on cp1252. E402 is the documented trade-off here.
+from ml.postprocess import (  # noqa: E402
     CRITICAL_ENSEMBLE_SCORE,
     WARNING_ENSEMBLE_SCORE,
     get_critical_sources,
