@@ -24,6 +24,7 @@ import {
   getMetricsSummary,
   getTimeline,
   listAnomalies,
+  listFeedback,
   postFeedback,
   type ListAnomaliesParams,
 } from "./client";
@@ -33,6 +34,7 @@ import type {
   DriftStatus,
   Explanation,
   ExplanationStatus,
+  FeedbackHistoryResponse,
   FeedbackRequest,
   FeedbackResponse,
   HealthResponse,
@@ -117,6 +119,16 @@ export function useFeedback(anomalyId: string) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["anomalies"] });
       qc.invalidateQueries({ queryKey: ["anomaly", anomalyId] });
+      // History page should refresh after a new verdict lands.
+      qc.invalidateQueries({ queryKey: ["feedback-history"] });
     },
+  });
+}
+
+export function useFeedbackHistory(limit = 100) {
+  return useQuery<FeedbackHistoryResponse, Error>({
+    queryKey: ["feedback-history", limit],
+    queryFn: () => listFeedback(limit),
+    refetchInterval: 30_000,
   });
 }

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
+import { useFeedbackHistory } from "../api/queries";
 import { EyebrowLabel } from "../components/EyebrowLabel";
 import { cn } from "../lib/cn";
 import { formatRelativeTime } from "../lib/format";
@@ -8,138 +9,30 @@ import type { Feedback as FeedbackVerdict } from "../types";
 /**
  * /feedback — engineer feedback history.
  *
- *   ┌────────────────────────────────────────────────────────────┐
- *   │  Engineer feedback                                         │
- *   │  Feedback history                                          │
- *   ├────────────────────────────────────────────────────────────┤
- *   │  31 total · 23 true · 8 false · 74% precision              │
- *   │  ──────────────────────────────────────────────────────    │
- *   │  [All] [True positive] [False positive]                    │
- *   │                                                            │
- *   │  2m ago   TRUE+    anom_a1b2c3d4   keystone-api  deepthi   │
- *   │  9m ago   FALSE+   anom_e5f6a7b8   neutron-3     alex      │
- *   │  …                                                         │
- *   └────────────────────────────────────────────────────────────┘
+ * Wired to `GET /api/v1/feedback` via `useFeedbackHistory`. Counts
+ * (total / true+ / false+) come from the response so they stay
+ * consistent with the underlying DB even when the items list is
+ * truncated by the backend's limit.
  *
- * No real feedback API hookup yet — uses an inline fixture so the page
- * has texture for the demo. When `POST /anomalies/{id}/feedback` is
- * persisted server-side, swap the fixture for a `useFeedbackHistory()`
- * query.
+ * Engineer-attribution column is intentionally omitted — the schema
+ * doesn't store who-clicked-which-button (auth is single-user for now).
+ * Add the column back when multi-user attribution lands.
  */
-
-interface FeedbackRecord {
-  submitted_at: string;
-  verdict: FeedbackVerdict;
-  anomaly_id: string;
-  source: string;
-  template: string;
-  engineer: string;
-}
-
-function isoMinutesAgo(min: number): string {
-  return new Date(Date.now() - min * 60_000)
-    .toISOString()
-    .replace(/\.\d+Z$/, "Z");
-}
-
-const FEEDBACK_HISTORY: FeedbackRecord[] = [
-  {
-    submitted_at: isoMinutesAgo(2),
-    verdict: "true_positive",
-    anomaly_id: "anom_a1b2c3d4",
-    source: "nova-api-prod-3",
-    template: "ERROR keystone-api Failed to authenticate user <*>",
-    engineer: "deepthi",
-  },
-  {
-    submitted_at: isoMinutesAgo(9),
-    verdict: "false_positive",
-    anomaly_id: "anom_e5f6a7b8",
-    source: "neutron-server-3",
-    template: "WARN slow_query duration=<*>ms",
-    engineer: "alex",
-  },
-  {
-    submitted_at: isoMinutesAgo(18),
-    verdict: "true_positive",
-    anomaly_id: "anom_d4e5f6a7",
-    source: "nova-api-prod-7",
-    template: "ERROR OOMKilled container terminated <*>",
-    engineer: "deepthi",
-  },
-  {
-    submitted_at: isoMinutesAgo(34),
-    verdict: "true_positive",
-    anomaly_id: "anom_c3d4e5f6",
-    source: "glance-api-2",
-    template: "ERROR upstream 5xx burst service <*>",
-    engineer: "priya",
-  },
-  {
-    submitted_at: isoMinutesAgo(67),
-    verdict: "false_positive",
-    anomaly_id: "anom_a3b4c5d6",
-    source: "prometheus-collector",
-    template: "INFO scrape completed targets=<*>",
-    engineer: "alex",
-  },
-  {
-    submitted_at: isoMinutesAgo(95),
-    verdict: "true_positive",
-    anomaly_id: "anom_b8c9d0e1",
-    source: "redis-cache-master",
-    template: "WARN cache stampede repeated misses key <*>",
-    engineer: "deepthi",
-  },
-  {
-    submitted_at: isoMinutesAgo(124),
-    verdict: "true_positive",
-    anomaly_id: "anom_f6a7b8c9",
-    source: "namenode-prod-1",
-    template: "WARN heartbeat lost from <*>",
-    engineer: "priya",
-  },
-  {
-    submitted_at: isoMinutesAgo(180),
-    verdict: "true_positive",
-    anomaly_id: "anom_a7b8c9d0",
-    source: "nova-api-prod-2",
-    template: "WARN rate limit exceeded client <*>",
-    engineer: "deepthi",
-  },
-  {
-    submitted_at: isoMinutesAgo(210),
-    verdict: "false_positive",
-    anomaly_id: "anom_e1f2a3b4",
-    source: "nova-api-prod-5",
-    template: "INFO request completed status=200 duration=<*>",
-    engineer: "alex",
-  },
-  {
-    submitted_at: isoMinutesAgo(265),
-    verdict: "true_positive",
-    anomaly_id: "anom_c5d6e7f8",
-    source: "rabbitmq-1",
-    template: "WARN healthcheck failed response code <*>",
-    engineer: "deepthi",
-  },
-];
 
 type Filter = "all" | FeedbackVerdict;
 
 export function Feedback() {
   const [filter, setFilter] = useState<Filter>("all");
-  const total = FEEDBACK_HISTORY.length;
-  const truePos = FEEDBACK_HISTORY.filter(
-    (r) => r.verdict === "true_positive",
-  ).length;
-  const falsePos = total - truePos;
-  const precision = truePos / total;
+  const { data, isLoading, isError, error, refetch } = useFeedbackHistory(200);
+
+  const items = data?.items ?? [];
+  const total = data?.total ?? 0;
+  const truePos = data?.true_positive ?? 0;
+  const falsePos = data?.false_positive ?? 0;
+  const precision = total > 0 ? truePos / total : 0;
 
   const rows =
-    filter === "all"
-      ? FEEDBACK_HISTORY
-      : FEEDBACK_HISTORY.filter((r) => r.verdict === filter);
+    filter === "all" ? items : items.filter((r) => r.verdict === filter);
 
   return (
     <div className="pb-12">
@@ -157,7 +50,7 @@ export function Feedback() {
         <Stat label="False positive" value={falsePos.toString()} tone="critical" />
         <Stat
           label="Precision"
-          value={`${(precision * 100).toFixed(0)}%`}
+          value={total > 0 ? `${(precision * 100).toFixed(0)}%` : "—"}
           tone="primary"
         />
       </div>
@@ -181,44 +74,57 @@ export function Feedback() {
         </FilterChip>
       </div>
 
-      {/* Rows */}
-      <div className="overflow-hidden rounded-lg border-[0.5px] border-border-subtle bg-card">
-        <div className="grid grid-cols-[110px_104px_180px_1fr_120px] items-center gap-4 border-b-[0.5px] border-border-subtle px-4 py-2.5 text-[10px] uppercase tracking-wider text-tertiary">
-          <div>Submitted</div>
-          <div>Verdict</div>
-          <div>Source</div>
-          <div>Template</div>
-          <div className="text-right">Engineer</div>
-        </div>
-        <div className="divide-y-[0.5px] divide-border-subtle">
-          {rows.map((r) => (
-            <Link
-              key={`${r.anomaly_id}-${r.submitted_at}`}
-              to={`/anomalies/${encodeURIComponent(r.anomaly_id)}`}
-              className="grid grid-cols-[110px_104px_180px_1fr_120px] items-center gap-4 px-4 py-2.5 transition-colors hover:bg-hover/40"
-            >
-              <div
-                className="text-[12px] text-tertiary"
-                title={new Date(r.submitted_at).toLocaleString()}
+      {/* Loading / error / empty / rows */}
+      {isLoading && <StateRow message="Loading feedback history…" />}
+      {isError && (
+        <StateRow
+          message={`Failed to load feedback: ${error?.message ?? "unknown error"}`}
+          onRetry={() => refetch()}
+        />
+      )}
+      {!isLoading && !isError && total === 0 && (
+        <StateRow message="No feedback submitted yet. Open an anomaly and click True positive / False positive to start." />
+      )}
+      {!isLoading && !isError && total > 0 && (
+        <div className="overflow-hidden rounded-lg border-[0.5px] border-border-subtle bg-card">
+          <div className="grid grid-cols-[110px_104px_180px_1fr] items-center gap-4 border-b-[0.5px] border-border-subtle px-4 py-2.5 text-[10px] uppercase tracking-wider text-tertiary">
+            <div>Submitted</div>
+            <div>Verdict</div>
+            <div>Source</div>
+            <div>Template</div>
+          </div>
+          <div className="divide-y-[0.5px] divide-border-subtle">
+            {rows.map((r) => (
+              <Link
+                key={r.anomaly_id}
+                to={`/anomalies/${encodeURIComponent(r.anomaly_id)}`}
+                className="grid grid-cols-[110px_104px_180px_1fr] items-center gap-4 px-4 py-2.5 transition-colors hover:bg-hover/40"
               >
-                {formatRelativeTime(r.submitted_at)}
+                <div
+                  className="text-[12px] text-tertiary"
+                  title={new Date(r.submitted_at).toLocaleString()}
+                >
+                  {formatRelativeTime(r.submitted_at)}
+                </div>
+                <div>
+                  <VerdictPill verdict={r.verdict} />
+                </div>
+                <div className="truncate font-mono text-[12px] text-secondary">
+                  {r.source}
+                </div>
+                <div className="truncate font-mono text-[12px] text-primary">
+                  {r.log_template}
+                </div>
+              </Link>
+            ))}
+            {rows.length === 0 && (
+              <div className="px-4 py-6 text-center text-[12px] text-tertiary">
+                No feedback matches this filter.
               </div>
-              <div>
-                <VerdictPill verdict={r.verdict} />
-              </div>
-              <div className="truncate font-mono text-[12px] text-secondary">
-                {r.source}
-              </div>
-              <div className="truncate font-mono text-[12px] text-primary">
-                {r.template}
-              </div>
-              <div className="text-right text-[12px] text-tertiary">
-                {r.engineer}
-              </div>
-            </Link>
-          ))}
+            )}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
@@ -289,5 +195,28 @@ function VerdictPill({ verdict }: { verdict: FeedbackVerdict }) {
     >
       {verdict === "true_positive" ? "true +" : "false +"}
     </span>
+  );
+}
+
+function StateRow({
+  message,
+  onRetry,
+}: {
+  message: string;
+  onRetry?: () => void;
+}) {
+  return (
+    <div className="flex flex-col items-center gap-3 rounded-lg border-[0.5px] border-border-subtle bg-card px-4 py-10 text-center text-[12px] text-tertiary">
+      <span>{message}</span>
+      {onRetry && (
+        <button
+          type="button"
+          onClick={onRetry}
+          className="rounded-md border-[0.5px] border-border-subtle px-3 py-1 text-[11px] text-secondary transition-colors hover:bg-hover hover:text-primary"
+        >
+          Retry
+        </button>
+      )}
+    </div>
   );
 }

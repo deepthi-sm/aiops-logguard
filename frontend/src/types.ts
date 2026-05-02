@@ -99,6 +99,22 @@ export interface FeedbackResponse {
   ok: boolean;
 }
 
+export interface FeedbackHistoryItem {
+  anomaly_id: string;
+  verdict: Feedback;
+  submitted_at: string; // ISO 8601 UTC; backend uses detected_at as proxy.
+  source: string;
+  log_template: string;
+  severity: Severity;
+}
+
+export interface FeedbackHistoryResponse {
+  items: FeedbackHistoryItem[];
+  total: number;
+  true_positive: number;
+  false_positive: number;
+}
+
 export interface HealthResponse {
   status: "ok" | "degraded";
   version: string;
