@@ -318,12 +318,16 @@ def test_openapi_contains_anomaly_schema(client):
     spec = client.get("/openapi.json").json()
     assert "Anomaly" in spec["components"]["schemas"]
     anomaly_schema = spec["components"]["schemas"]["Anomaly"]
-    # Every canonical field per CLAUDE.md "Canonical anomaly shape"
+    # Every canonical field per CLAUDE.md "Canonical anomaly shape" plus
+    # `origin` (added to disambiguate "live-stream" vs "user-upload"
+    # entry points; `source` is the parsed display identifier, `origin`
+    # is the filter tag).
     expected_fields = {
         "id",
         "detected_at",
         "severity",
         "source",
+        "origin",
         "ensemble_score",
         "confidence",
         "failure_probability",
