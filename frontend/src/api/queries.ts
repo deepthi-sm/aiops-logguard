@@ -58,7 +58,10 @@ export function useAnomalies(
   return useQuery({
     queryKey: ["anomalies", params],
     queryFn: () => listAnomalies(params),
-    refetchInterval: 5_000,
+    // 2s instead of 5s — smoother during a live /connect demo where
+    // anomalies arrive at ~2-3/sec. The WebSocket pushes individual
+    // events but the list still relies on this poll for full re-render.
+    refetchInterval: 2_000,
     ...options,
   });
 }
@@ -88,7 +91,9 @@ export function useMetricsSummary() {
   return useQuery<MetricsSummary, Error>({
     queryKey: ["metrics-summary"],
     queryFn: getMetricsSummary,
-    refetchInterval: 10_000,
+    // KPI strip — 3s feels live during a streaming demo without
+    // hammering the API.
+    refetchInterval: 3_000,
   });
 }
 
@@ -96,7 +101,9 @@ export function useTimeline(window: TimelineWindow) {
   return useQuery<TimelineResponse, Error>({
     queryKey: ["timeline", window],
     queryFn: () => getTimeline(window),
-    refetchInterval: 30_000,
+    // 5s on the activity-over-time chart so bars grow smoothly during
+    // a /connect demo. 30s was too clumpy.
+    refetchInterval: 5_000,
   });
 }
 
