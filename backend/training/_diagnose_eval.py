@@ -38,7 +38,6 @@ import torch  # noqa: E402
 
 from ml.detector import Detector  # noqa: E402
 from ml.ensemble import combine, normalise_ae_error  # noqa: E402
-from training.calibrate import build_confidence_features  # noqa: E402
 from training.eval_holdout_openstack import (  # noqa: E402
     _auc_score,
     compute_confidence,
