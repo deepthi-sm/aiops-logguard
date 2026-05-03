@@ -72,7 +72,10 @@ class TestDecideSeverity:
     """
 
     def test_critical_when_ensemble_high_and_source_in_critical_set(self):
-        det = _detection(ensemble=0.9, transformer_prob=0.5)
+        # Critical threshold is 0.95 (raised from 0.85 after BGL/Thunderbolt
+        # uploads were tagging ~80% of windows as critical). 0.96 clears
+        # the bar; older fixtures used 0.9, which is now warning territory.
+        det = _detection(ensemble=0.96, transformer_prob=0.5)
         assert (
             decide_severity(det, "nova-api-prod-3", critical_sources=frozenset({"nova-api-prod-3"}))
             == "critical"
@@ -149,9 +152,9 @@ class TestDecideSeverity:
         """Sentinel behaviour: critical_sources=None falls through to the
         env-driven default. This is the production code path."""
         monkeypatch.delenv(CRITICAL_SOURCES_ENV, raising=False)
-        # Ensemble high enough to clear the critical threshold so we can
-        # distinguish "critical default fired" from "fell to warning".
-        det = _detection(ensemble=0.9, transformer_prob=0.5)
+        # Ensemble high enough to clear the 0.95 critical threshold so we
+        # can distinguish "critical default fired" from "fell to warning".
+        det = _detection(ensemble=0.96, transformer_prob=0.5)
         # A name from the demo default should fire critical.
         any_default_source = next(iter(DEFAULT_CRITICAL_SOURCES))
         assert decide_severity(det, any_default_source) == "critical"
@@ -185,22 +188,19 @@ class TestGetCriticalSources:
         assert get_critical_sources() == DEFAULT_CRITICAL_SOURCES
 
     def test_default_includes_every_log_replay_source(self):
-        """Sanity: when tools/log_replay.py lands (Step 8) it must emit
-        every name in this set, otherwise critical alerts silently never
-        fire. Pin the list here so any future drift trips a test."""
-        # Hardcoded once so the test catches an accidental rename of the
-        # constants. If you legitimately change the demo set, update this
-        # list AND log_replay.py together. Names align with the frontend
-        # mock fixtures (see frontend/src/api/mock.ts) so the demo + mock
-        # render with the same vocabulary.
-        expected = {
+        """Sanity: every name `tools/log_replay.py` emits must be in
+        DEFAULT_CRITICAL_SOURCES, otherwise critical alerts silently
+        never fire for replay traffic. Subset (not equal) — the set
+        ALSO includes upload-flow tags ("user-upload", "mixed") that
+        log_replay doesn't emit but uploads do."""
+        replay_sources = {
             "nova-api-prod-3",
             "neutron-server-1",
             "glance-api-2",
             "keystone-api-2",
             "namenode-prod-1",
         }
-        assert set(DEFAULT_CRITICAL_SOURCES) == expected
+        assert replay_sources <= set(DEFAULT_CRITICAL_SOURCES)
 
 
 # -- Deduplicator -----------------------------------------------------------
@@ -292,9 +292,12 @@ class TestBuildAnomaly:
         assert a.cluster_size == 3
         assert a.source == window.source
 
-    def test_critical_carries_predicted_failure_minutes(self):
+    def test_predicted_failure_minutes_passes_through_when_in_paper_range(self):
+        """The dashboard shows a per-anomaly "predicted in N min" column.
+        When the failure-regression head produces a value in the paper's
+        claimed range [10, 15], that value is used directly."""
         window = build_windows(_events(20))[0]
-        det = _detection(transformer_prob=0.9, failure_min=8)
+        det = _detection(transformer_prob=0.9, failure_min=12)
         ctx = AnomalyContext(
             window=window,
             detection=det,
@@ -303,11 +306,17 @@ class TestBuildAnomaly:
             cluster_size=1,
         )
         a = build_anomaly(ctx)
-        assert a.predicted_failure_window_min == 8
+        assert a.predicted_failure_window_min == 12
 
-    def test_non_critical_drops_predicted_failure_minutes(self):
+    def test_non_critical_carries_predicted_failure_minutes(self):
+        """Predicted failure window is now ALWAYS populated, regardless
+        of severity. Was previously gated on severity=='critical' but
+        that left every row showing '—' on the dashboard for the
+        common case (no anomaly clears the 0.95 critical bar).
+        Heuristically clamped to [10, 15] when the model output isn't
+        in that range (see `_failure_window_min`)."""
         window = build_windows(_events(20))[0]
-        det = _detection(failure_min=8)
+        det = _detection(failure_min=8)  # outside [10,15] → heuristic kicks in
         ctx = AnomalyContext(
             window=window,
             detection=det,
@@ -315,7 +324,9 @@ class TestBuildAnomaly:
             cluster_id="clu_x",
             cluster_size=1,
         )
-        assert build_anomaly(ctx).predicted_failure_window_min is None
+        a = build_anomaly(ctx)
+        assert a.predicted_failure_window_min is not None
+        assert 10 <= a.predicted_failure_window_min <= 15
 
     def test_top_contributing_lines_ranked_by_attention(self):
         window = build_windows(_events(20))[0]
