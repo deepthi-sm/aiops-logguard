@@ -45,8 +45,9 @@ class ParsedLog:
     raw: str            # original line (kept for top_contributing_lines display)
     template: str       # normalised Drain3 template
     template_id: str    # Drain3 cluster id — stable across runs (state persisted)
-    source: str         # hostname / service identifier
+    source: str         # hostname / service identifier (display)
     line_no: int        # 0-indexed position in the source stream
+    origin: str = "live-stream"   # 'live-stream' | 'user-upload' — propagated to anomaly
 
 
 @dataclass
@@ -58,6 +59,7 @@ class Window:
     label: Label
     source: str                     # single source if all events agree, else "mixed"
     line_range: tuple[int, int]     # (first_line_no, last_line_no_inclusive)
+    origin: str = "live-stream"     # uniform within an upload / stream batch
 
     @property
     def text(self) -> str:
@@ -74,6 +76,9 @@ class Window:
 def _make_window(chunk: list[ParsedLog], label: Label) -> Window:
     sources = {e.source for e in chunk}
     source = chunk[0].source if len(sources) == 1 else "mixed"
+    # Origin is uniform within a coherent stream batch (one upload =
+    # one job; one live-stream entry has one producer). Take the first.
+    origin = chunk[0].origin
     return Window(
         window_id=str(uuid.uuid4()),
         templates=[e.template for e in chunk],
@@ -81,6 +86,7 @@ def _make_window(chunk: list[ParsedLog], label: Label) -> Window:
         label=label,
         source=source,
         line_range=(chunk[0].line_no, chunk[-1].line_no),
+        origin=origin,
     )
 
 

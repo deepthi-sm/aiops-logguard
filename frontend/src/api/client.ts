@@ -20,6 +20,7 @@ import type {
   FeedbackResponse,
   HealthResponse,
   MetricsSummary,
+  Origin,
   Severity,
   TimelineResponse,
   TimelineWindow,
@@ -96,6 +97,7 @@ export interface ListAnomaliesParams {
   since?: string;
   severity?: Severity;
   source?: string;
+  origin?: Origin;
   cursor?: string;
 }
 
@@ -113,6 +115,9 @@ export async function listAnomalies(
     if (params.source) {
       items = items.filter((a) => a.source === params.source);
     }
+    if (params.origin) {
+      items = items.filter((a) => a.origin === params.origin);
+    }
     if (params.limit !== undefined) {
       items = items.slice(0, params.limit);
     }
@@ -123,6 +128,7 @@ export async function listAnomalies(
   if (params.since) search.set("since", params.since);
   if (params.severity) search.set("severity", params.severity);
   if (params.source) search.set("source", params.source);
+  if (params.origin) search.set("origin", params.origin);
   if (params.cursor) search.set("cursor", params.cursor);
   const qs = search.toString();
   const { data } = await fetchJson<AnomalyListResponse>(
@@ -239,6 +245,29 @@ export async function getHealth(): Promise<HealthResponse> {
 }
 
 export const isMockMode = USE_MOCK;
+
+/**
+ * DELETE /api/v1/anomalies — wipes ALL anomalies + drift events.
+ * Returns the count of rows deleted. Used between demo uploads so each
+ * upload starts from a clean dashboard.
+ */
+export async function clearAllAnomalies(): Promise<{ deleted: number }> {
+  if (USE_MOCK) {
+    return mockDelay({ deleted: 0 });
+  }
+  const res = await fetch(`${BASE}/anomalies`, { method: "DELETE" });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const body = (await res.json()) as { detail?: string };
+      if (body.detail) detail = body.detail;
+    } catch {
+      /* not JSON */
+    }
+    throw new ApiError(res.status, detail);
+  }
+  return (await res.json()) as { deleted: number };
+}
 
 // -- upload ---------------------------------------------------------------
 

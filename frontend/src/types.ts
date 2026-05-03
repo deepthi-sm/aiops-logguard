@@ -20,6 +20,10 @@ export type ExplanationStatus = "pending" | "ready" | "failed";
 export type Feedback = "true_positive" | "false_positive";
 export type TimelineWindow = "1h" | "24h" | "7d";
 export type DriftLevel = "healthy" | "drift_high" | "drift_critical";
+// Entry-point tag for filtering; distinct from `source` (parsed display name).
+//   "live-stream" — emitted by the live ingestion runner
+//   "user-upload" — emitted by a /upload streaming job
+export type Origin = "live-stream" | "user-upload";
 
 export interface ContributingLine {
   line: string;
@@ -31,6 +35,7 @@ export interface Anomaly {
   detected_at: string; // ISO 8601 UTC with 'Z' suffix
   severity: Severity;
   source: string;
+  origin: Origin;
   ensemble_score: number; // 0..1
   confidence: number; // 0..1
   failure_probability: number; // 0..1

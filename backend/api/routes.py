@@ -11,10 +11,13 @@ still hold.
 import base64
 import binascii
 import json
+import logging
+import os
 from datetime import UTC, datetime
 from typing import Annotated
 
 import asyncpg
+import redis.asyncio as redis_aio
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
 from api import repository
@@ -33,6 +36,30 @@ from api.schemas import (
     TimelineResponse,
     TimelineWindow,
 )
+
+_log = logging.getLogger(__name__)
+
+# Redis list the RAG explainer pops from before its DB poll. When a
+# user GETs /explanation on a pending anomaly we LPUSH the id here so
+# the worker explains it next, instead of leaving the user waiting
+# behind hundreds of un-viewed anomalies in the upload backlog.
+PRIORITY_LIST = "anomalies:priority"
+
+
+async def _bump_explanation_priority(anomaly_id: str) -> None:
+    """Best-effort priority bump. Failures (Redis down, network blip)
+    must NOT fail the GET — the explanation will eventually surface
+    via the worker's normal LIFO DB poll, just slower."""
+    try:
+        url = os.environ.get("LOGGUARD_REDIS_URL", "redis://localhost:6379")
+        client = redis_aio.from_url(url, decode_responses=True)
+        try:
+            await client.lpush(PRIORITY_LIST, anomaly_id)
+        finally:
+            await client.aclose()
+    except Exception:  # noqa: BLE001
+        _log.exception("priority bump failed for %s; falling back to LIFO", anomaly_id)
+
 
 router = APIRouter(prefix="/api/v1")
 
@@ -60,6 +87,22 @@ def _decode_cursor(cursor: str | None) -> int:
 
 # ---------- /anomalies ----------
 
+@router.delete("/anomalies", status_code=200)
+async def clear_anomalies(
+    pool: Annotated[asyncpg.Pool, Depends(get_pool)],
+) -> dict[str, int]:
+    """Wipe ALL anomalies + drift events. Used between demo uploads so
+    each upload starts from a clean dashboard state.
+
+    Not for production. Returns the count of rows deleted so the caller
+    can confirm the wipe took effect.
+    """
+    async with pool.acquire() as conn:
+        deleted = await conn.fetchval("SELECT COUNT(*) FROM anomalies")
+        await conn.execute("TRUNCATE anomalies, drift_events RESTART IDENTITY CASCADE")
+    return {"deleted": int(deleted or 0)}
+
+
 @router.get("/anomalies", response_model=AnomalyListResponse)
 async def list_anomalies(
     pool: Annotated[asyncpg.Pool, Depends(get_pool)],
@@ -71,9 +114,20 @@ async def list_anomalies(
         Query(
             min_length=1, max_length=128,
             description=(
-                "Exact-match filter on the `source` column "
-                "(e.g. ?source=user-upload to surface only anomalies "
-                "derived from a user-uploaded log file)."
+                "Exact-match filter on the `source` column — the parsed "
+                "host/service identifier displayed in the UI (e.g. "
+                "?source=bgl shows anomalies from the BGL upload)."
+            ),
+        ),
+    ] = None,
+    origin: Annotated[
+        str | None,
+        Query(
+            min_length=1, max_length=32,
+            description=(
+                "Filter on the anomaly's origin tag. "
+                "'user-upload' shows anomalies derived from /upload calls; "
+                "'live-stream' shows anomalies from the live ingestion runner."
             ),
         ),
     ] = None,
@@ -91,6 +145,7 @@ async def list_anomalies(
         severity=severity,
         since=since_aware,
         source=source,
+        origin=origin,
     )
     next_offset = offset + len(items)
     next_cursor = _encode_cursor(next_offset) if next_offset < total else None
@@ -124,6 +179,10 @@ async def get_explanation(
     if status_value is None:
         raise HTTPException(status_code=404, detail="Anomaly not found")
     if status_value == "pending":
+        # Bump this anomaly to the front of the explainer's queue so
+        # the user clicking it doesn't wait through the entire upload
+        # backlog (could be thousands of items at ~75s/each).
+        await _bump_explanation_priority(anomaly_id)
         return Response(status_code=status.HTTP_202_ACCEPTED)
     if explanation is None:
         # explanation_status is "failed" — no detail available. Surface as 500

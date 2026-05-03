@@ -84,7 +84,7 @@ class LogParser:
         """Number of Drain3 clusters currently loaded in memory."""
         return len(self._miner.drain.clusters)
 
-    def parse(self, raw: str, source: str) -> ParsedLog:
+    def parse(self, raw: str, source: str, *, origin: str = "live-stream") -> ParsedLog:
         """Parse one log line against the loaded template tree.
 
         Match-only — never adds new clusters, never saves state.
@@ -93,6 +93,9 @@ class LogParser:
             raw: the full original line (newline already stripped by caller).
             source: hostname or service identifier (e.g. "nova-api-prod-3").
                     Stored on the ParsedLog so windows can be tagged by source.
+            origin: entry-point tag — "live-stream" (default) or "user-upload".
+                    Propagated through to the Anomaly so the dashboard can
+                    filter by origin without overloading the displayed source.
 
         Returns:
             A ParsedLog with the matched cluster's settled template, the
@@ -117,6 +120,7 @@ class LogParser:
             template_id=template_id,
             source=source,
             line_no=self._line_no,
+            origin=origin,
         )
         self._line_no += 1
         return parsed

@@ -45,6 +45,10 @@ log = logging.getLogger(__name__)
 # consumer can't drift apart silently.
 FIELD_LINE = "line"
 FIELD_SOURCE = "source"
+# Optional. Producers that don't include `origin` (live demo replay,
+# legacy clients) implicitly mean "live-stream".
+FIELD_ORIGIN = "origin"
+DEFAULT_ORIGIN = "live-stream"
 
 DEFAULT_REDIS_URL = "redis://localhost:6379"
 DEFAULT_STREAM = "logs:raw"
@@ -117,13 +121,20 @@ class LogStreamConsumer:
                     self._last_id = _to_str(entry_id)
                     line = fields.get(FIELD_LINE) or fields.get(FIELD_LINE.encode())
                     source = fields.get(FIELD_SOURCE) or fields.get(FIELD_SOURCE.encode())
+                    origin = (
+                        fields.get(FIELD_ORIGIN)
+                        or fields.get(FIELD_ORIGIN.encode())
+                        or DEFAULT_ORIGIN
+                    )
                     if line is None or source is None:
                         log.warning(
                             "stream entry missing 'line' or 'source' field; skipping (id=%s)",
                             self._last_id,
                         )
                         continue
-                    yield self._parser.parse(_to_str(line), _to_str(source))
+                    yield self._parser.parse(
+                        _to_str(line), _to_str(source), origin=_to_str(origin),
+                    )
 
 
 class WindowedConsumer:

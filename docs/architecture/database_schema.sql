@@ -5,7 +5,9 @@ CREATE TABLE IF NOT EXISTS anomalies (
     id TEXT PRIMARY KEY,                            -- format: anom_<iso8601>_<4hex>
     detected_at TIMESTAMPTZ NOT NULL,
     severity TEXT NOT NULL CHECK (severity IN ('critical', 'warning', 'info')),
-    source TEXT NOT NULL,                           -- hostname / service identifier
+    source TEXT NOT NULL,                           -- hostname / service identifier (display)
+    origin TEXT NOT NULL DEFAULT 'live-stream'      -- 'live-stream' | 'user-upload' (filter tag)
+        CHECK (origin IN ('live-stream', 'user-upload')),
     ensemble_score REAL,                            -- 0..1
     confidence REAL,                                -- 0..1, from confidence MLP
     failure_probability REAL,                       -- 0..1, from Transformer failure head
@@ -28,6 +30,18 @@ CREATE INDEX IF NOT EXISTS idx_anomalies_detected_at ON anomalies (detected_at D
 CREATE INDEX IF NOT EXISTS idx_anomalies_severity ON anomalies (severity);
 CREATE INDEX IF NOT EXISTS idx_anomalies_cluster ON anomalies (cluster_id);
 CREATE INDEX IF NOT EXISTS idx_anomalies_explanation_status ON anomalies (explanation_status);
+
+-- Idempotent migration for existing DBs that pre-date the origin column.
+-- MUST run BEFORE the idx_anomalies_origin index below — for a fresh DB
+-- the column already exists from CREATE TABLE; for an upgraded DB this
+-- ADDs it. Postgres 11+ ADD COLUMN with a default doesn't rewrite the
+-- table; the CHECK constraint on origin lives only on CREATE TABLE
+-- because adding it post-hoc would scan every existing row. The model
+-- layer enforces the literal at write time, so functionally same guarantee.
+ALTER TABLE anomalies
+    ADD COLUMN IF NOT EXISTS origin TEXT NOT NULL DEFAULT 'live-stream';
+
+CREATE INDEX IF NOT EXISTS idx_anomalies_origin ON anomalies (origin);
 
 -- For metrics/timeline endpoint efficiency
 CREATE INDEX IF NOT EXISTS idx_anomalies_detected_severity

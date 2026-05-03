@@ -35,9 +35,12 @@ from tools.log_replay import (
 
 
 def test_critical_sources_match_postprocess():
-    """The replay tool and postprocess must agree on the critical pool —
-    if these drift, no demo window ever lands in the critical tier."""
-    assert set(CRITICAL_SOURCES) == set(DEFAULT_CRITICAL_SOURCES)
+    """Every name in the replay tool's CRITICAL_SOURCES tuple must also
+    be in `ml.postprocess.DEFAULT_CRITICAL_SOURCES`. Reverse is no
+    longer required: postprocess now also includes "user-upload" and
+    "mixed" so demo uploads can produce critical anomalies — those are
+    not log_replay sources, so the relation became subset, not equal."""
+    assert set(CRITICAL_SOURCES) <= set(DEFAULT_CRITICAL_SOURCES)
 
 
 def test_critical_and_non_critical_pools_are_disjoint():

@@ -10,7 +10,6 @@ a real Ollama by a manual smoke test (see the explainer's CLI).
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
 
@@ -263,7 +262,14 @@ class TestHandleOne:
     async def test_ollama_failure_marks_row_failed(self, monkeypatch):
         """If LLaMA throws, the worker marks the row as 'failed' so the
         UI doesn't spin forever. The exception is caught at the loop
-        level — _handle_one re-raises, and run() catches it."""
+        level — _handle_one re-raises, and run() catches it.
+
+        The dispatch path is now DB-poll based via `_next_pending_lifo`
+        (was pubsub via `_iter_ids` before the LIFO + priority-queue
+        rework). We monkey-patch that to deliver one anomaly id then
+        return None, and bound the loop with `asyncio.wait_for` since
+        run() is otherwise infinite (sleeps on empty queue).
+        """
         async def fake_get(_pool, anomaly_id):
             return _anomaly()
 
@@ -286,13 +292,20 @@ class TestHandleOne:
             llama=_RaisingLlama(),
         )
 
-        # Drive the dispatch path that catches per-message errors
-        # (run() does this; we simulate one iteration).
-        async def one_iter() -> AsyncIterator[str]:
-            yield "anom_x"
+        # Deliver one anomaly id, then drain. The loop sleeps 2s when
+        # `_next_pending_lifo` returns None — wait_for cancels during
+        # that sleep, which is the clean exit path.
+        nexts: list[str | None] = ["anom_x"]
 
-        explainer._iter_ids = one_iter  # type: ignore[assignment]
-        await explainer.run()
+        async def fake_next() -> str | None:
+            return nexts.pop(0) if nexts else None
+
+        explainer._next_pending_lifo = fake_next  # type: ignore[assignment]
+
+        try:
+            await asyncio.wait_for(explainer.run(), timeout=0.5)
+        except TimeoutError:
+            pass
 
         assert explainer.stats.failed == 1
         # Best-effort: row marked as failed

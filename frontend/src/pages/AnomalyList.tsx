@@ -12,7 +12,7 @@ import { ErrorState } from "../components/ErrorState";
 import { EyebrowLabel } from "../components/EyebrowLabel";
 import { Skeleton } from "../components/Skeleton";
 import { formatNumber } from "../lib/format";
-import type { Anomaly } from "../types";
+import type { Anomaly, Origin } from "../types";
 
 const INITIAL_STATE: AnomalyFiltersState = {
   severities: new Set(),
@@ -35,15 +35,25 @@ const INITIAL_STATE: AnomalyFiltersState = {
  */
 export function AnomalyList() {
   const [searchParams] = useSearchParams();
-  // The Upload page redirects here with `?source=user-upload` after an
-  // upload completes — seed the source filter from the URL so the user
-  // lands on a pre-filtered view.
+  // After an upload completes, the Upload page redirects here with
+  // `?origin=user-upload` — that's a server-side filter so the list
+  // only contains anomalies from the just-uploaded file. The legacy
+  // `?source=...` URL still works as a UI source-dropdown pre-fill.
   const initialSource = searchParams.get("source");
+  const originFilter = (() => {
+    const raw = searchParams.get("origin");
+    return raw === "user-upload" || raw === "live-stream"
+      ? (raw as Origin)
+      : null;
+  })();
   const [filters, setFilters] = useState<AnomalyFiltersState>({
     ...INITIAL_STATE,
     source: initialSource,
   });
-  const list = useAnomalies({ limit: 200 });
+  const list = useAnomalies({
+    limit: 200,
+    ...(originFilter ? { origin: originFilter } : {}),
+  });
 
   const items = list.data?.items ?? [];
 

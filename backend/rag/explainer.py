@@ -29,7 +29,6 @@ import json
 import logging
 import os
 import sys
-from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -42,7 +41,6 @@ from api import repository
 from api.db import DB_URL_ENV, create_pool
 from api.repository import install_jsonb_codec
 from api.schemas import SimilarIncident
-from ingestion.runner import CHANNEL_DETECTED
 from ml.embedder import SBertLike, load_default_sbert
 from rag.faiss_client import (
     DEFAULT_INDEX_PATH,
@@ -104,8 +102,31 @@ class RagExplainer:
         self.stats = ExplainerStats()
 
     async def run(self) -> None:
-        """Subscribe + dispatch loop."""
-        async for anomaly_id in self._iter_ids():
+        """DB-poll dispatch loop. Pops the NEWEST pending anomaly each
+        round (LIFO).
+
+        Why not pubsub anymore: pubsub is FIFO from the publisher's
+        perspective and offers no replay / backlog handling. With user
+        uploads producing hundreds of anomalies in seconds, the user
+        invariably clicks the most-recently-detected row in the
+        dashboard list — which under FIFO sits at the back of the
+        queue, behind hundreds of older items. LIFO matches user
+        expectation: the row they're looking at gets explained first.
+
+        The pubsub channel still exists (for future fan-out / multi-
+        worker designs) but is currently unused.
+        """
+        idle_sleep_s = 2.0
+        while True:
+            anomaly_id = await self._next_pending_lifo()
+            if anomaly_id is None:
+                # Queue empty — back off briefly and retry.
+                try:
+                    await asyncio.sleep(idle_sleep_s)
+                except asyncio.CancelledError:
+                    raise
+                continue
+
             self.stats.received += 1
             try:
                 await self._handle_one(anomaly_id)
@@ -115,7 +136,9 @@ class RagExplainer:
                 log.exception("explainer: unhandled error on %s", anomaly_id)
                 self.stats.failed += 1
                 # Best-effort mark the row as failed so the UI doesn't
-                # spin forever. Swallow secondary errors.
+                # spin forever AND so this same anomaly isn't re-popped
+                # by `_next_pending_lifo` on the next loop iteration
+                # (the WHERE filter is `status='pending'`).
                 try:
                     await self._mark_failed(anomaly_id)
                 except Exception:  # noqa: BLE001
@@ -123,26 +146,51 @@ class RagExplainer:
                         "explainer: failed to mark %s as failed", anomaly_id
                     )
 
-    async def _iter_ids(self) -> AsyncIterator[str]:
-        """Subscribe to the detected channel and yield anomaly ids."""
-        pubsub = self._subscriber.pubsub()
-        await pubsub.subscribe(CHANNEL_DETECTED)
+    async def _next_pending_lifo(self) -> str | None:
+        """Next anomaly to explain. Priority queue first, then LIFO DB poll.
+
+        Selection order:
+          1. `anomalies:priority` Redis list — populated by the API
+             when a user GETs /explanation on a pending anomaly. This
+             ensures user-clicked items skip ahead of the upload
+             backlog.
+          2. Newest `pending` row in the anomalies table — LIFO so the
+             most-recently-detected anomaly (typically what the user
+             is staring at on the dashboard) is processed before older
+             entries from the same upload.
+
+        Single-worker assumption — no row-level locking. With multiple
+        workers we'd want `FOR UPDATE SKIP LOCKED` on the DB query and
+        a Redis-side `BRPOP` for the priority list.
+        """
+        # 1. Priority queue (user GET /explanation on a pending row)
         try:
-            async for message in pubsub.listen():
-                if message.get("type") != "message":
-                    continue
-                payload = message.get("data")
-                if isinstance(payload, bytes | bytearray):
-                    payload = payload.decode("utf-8", errors="replace")
-                if not isinstance(payload, str) or not payload:
-                    continue
-                yield payload
-        finally:
-            try:
-                await pubsub.unsubscribe(CHANNEL_DETECTED)
-                await pubsub.aclose()
-            except Exception:  # noqa: BLE001
-                pass
+            priority_id = await self._subscriber.rpop("anomalies:priority")
+            if priority_id:
+                if isinstance(priority_id, bytes | bytearray):
+                    priority_id = priority_id.decode("utf-8", errors="replace")
+                # Guard against a now-stale entry: the row may have
+                # been processed since the push (e.g. by an earlier
+                # LIFO pick). Fall through to DB poll if so.
+                async with self._pool.acquire() as conn:
+                    is_pending = await conn.fetchval(
+                        "SELECT 1 FROM anomalies "
+                        "WHERE id = $1 AND explanation_status = 'pending'",
+                        priority_id,
+                    )
+                if is_pending:
+                    return priority_id
+        except Exception:  # noqa: BLE001
+            log.exception("priority-queue check failed; falling back to DB poll")
+
+        # 2. LIFO DB poll (newest pending first)
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT id FROM anomalies "
+                "WHERE explanation_status = 'pending' "
+                "ORDER BY detected_at DESC LIMIT 1"
+            )
+        return row["id"] if row else None
 
     # -- per-message work --------------------------------------------------
 
