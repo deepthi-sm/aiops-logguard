@@ -10,7 +10,6 @@ a real Ollama by a manual smoke test (see the explainer's CLI).
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
 
@@ -305,7 +304,7 @@ class TestHandleOne:
 
         try:
             await asyncio.wait_for(explainer.run(), timeout=0.5)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             pass
 
         assert explainer.stats.failed == 1
