@@ -39,11 +39,21 @@ from api.schemas import (
 
 _log = logging.getLogger(__name__)
 
-# Redis list the RAG explainer pops from before its DB poll. When a
-# user GETs /explanation on a pending anomaly we LPUSH the id here so
+# Redis SET the RAG explainer pops from before its DB poll. When a
+# user GETs /explanation on a pending anomaly we SADD the id here so
 # the worker explains it next, instead of leaving the user waiting
 # behind hundreds of un-viewed anomalies in the upload backlog.
-PRIORITY_LIST = "anomalies:priority"
+#
+# SET (not LIST) — the frontend polls /explanation every 2s while
+# pending, which previously LPUSHed dozens of duplicate ids per click.
+# That starved OTHER clicked anomalies because the worker spent its
+# rounds popping dups. SADD is idempotent: one click = one entry
+# regardless of poll count.
+#
+# New key name (`...:set`) to avoid a Redis WRONGTYPE collision with
+# the legacy LIST at the same name in environments that haven't been
+# wiped. Migration: the legacy LIST is now dead code; safe to ignore.
+PRIORITY_SET = "anomalies:priority:set"
 
 
 async def _bump_explanation_priority(anomaly_id: str) -> None:
@@ -54,7 +64,9 @@ async def _bump_explanation_priority(anomaly_id: str) -> None:
         url = os.environ.get("LOGGUARD_REDIS_URL", "redis://localhost:6379")
         client = redis_aio.from_url(url, decode_responses=True)
         try:
-            await client.lpush(PRIORITY_LIST, anomaly_id)
+            # SADD is idempotent — repeated polls of the same anomaly
+            # by the frontend collapse to a single set member.
+            await client.sadd(PRIORITY_SET, anomaly_id)
         finally:
             await client.aclose()
     except Exception:  # noqa: BLE001
@@ -91,16 +103,48 @@ def _decode_cursor(cursor: str | None) -> int:
 async def clear_anomalies(
     pool: Annotated[asyncpg.Pool, Depends(get_pool)],
 ) -> dict[str, int]:
-    """Wipe ALL anomalies + drift events. Used between demo uploads so
-    each upload starts from a clean dashboard state.
+    """Wipe ALL anomalies + drift events + the priority queue. Used
+    between demo runs so each /connect or /upload starts from a clean
+    dashboard. Not for production.
 
-    Not for production. Returns the count of rows deleted so the caller
-    can confirm the wipe took effect.
+    Specifically clears:
+      * `anomalies` table (TRUNCATE)
+      * `drift_events` table (TRUNCATE)
+      * `anomalies:priority:set` Redis SET (DEL) — the new dedup'd
+        priority queue
+      * `anomalies:priority` Redis LIST (DEL) — legacy queue from
+        before the LIST→SET migration; clear it so leftover entries
+        from older runs don't re-enter via a stale subscriber
+
+    Returns the count of DB rows deleted + the count of Redis priority
+    members removed, so the caller can confirm the wipe took effect.
     """
     async with pool.acquire() as conn:
         deleted = await conn.fetchval("SELECT COUNT(*) FROM anomalies")
         await conn.execute("TRUNCATE anomalies, drift_events RESTART IDENTITY CASCADE")
-    return {"deleted": int(deleted or 0)}
+
+    # Best-effort priority queue clear — Redis hiccup must NOT 500 the
+    # wipe. The DB part already succeeded; the worker will drift on at
+    # most a few stale priority entries before its own re-check kicks
+    # them through to LIFO DB poll (which now finds an empty table).
+    priority_cleared = 0
+    try:
+        url = os.environ.get("LOGGUARD_REDIS_URL", "redis://localhost:6379")
+        client = redis_aio.from_url(url, decode_responses=True)
+        try:
+            # SCARD gives the count before deletion so the caller can
+            # see what was cleared. DEL of a non-existent key is a no-op.
+            priority_cleared = await client.scard("anomalies:priority:set") or 0
+            await client.delete("anomalies:priority:set", "anomalies:priority")
+        finally:
+            await client.aclose()
+    except Exception:  # noqa: BLE001
+        _log.exception("priority-queue clear failed during DELETE /anomalies")
+
+    return {
+        "deleted": int(deleted or 0),
+        "priority_cleared": int(priority_cleared),
+    }
 
 
 @router.get("/anomalies", response_model=AnomalyListResponse)

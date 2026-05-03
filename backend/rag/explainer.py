@@ -147,30 +147,35 @@ class RagExplainer:
                     )
 
     async def _next_pending_lifo(self) -> str | None:
-        """Next anomaly to explain. Priority queue first, then LIFO DB poll.
+        """Next anomaly to explain. Priority set first, then LIFO DB poll.
 
         Selection order:
-          1. `anomalies:priority` Redis list — populated by the API
-             when a user GETs /explanation on a pending anomaly. This
-             ensures user-clicked items skip ahead of the upload
-             backlog.
+          1. `anomalies:priority:set` Redis SET — populated by the API
+             when a user GETs /explanation on a pending anomaly. SET
+             (not list) so the frontend's repeat polls collapse to one
+             entry per anomaly.
           2. Newest `pending` row in the anomalies table — LIFO so the
              most-recently-detected anomaly (typically what the user
              is staring at on the dashboard) is processed before older
              entries from the same upload.
 
+        SPOP returns a random member, which is fine for the demo: every
+        member is "the user wanted this one" and order among them is
+        functionally irrelevant. Random pop also avoids any single
+        anomaly monopolising the queue if the frontend re-bumps
+        aggressively.
+
         Single-worker assumption — no row-level locking. With multiple
-        workers we'd want `FOR UPDATE SKIP LOCKED` on the DB query and
-        a Redis-side `BRPOP` for the priority list.
+        workers we'd want `FOR UPDATE SKIP LOCKED` on the DB query.
         """
-        # 1. Priority queue (user GET /explanation on a pending row)
+        # 1. Priority set (user GET /explanation on a pending row)
         try:
-            priority_id = await self._subscriber.rpop("anomalies:priority")
+            priority_id = await self._subscriber.spop("anomalies:priority:set")
             if priority_id:
                 if isinstance(priority_id, bytes | bytearray):
                     priority_id = priority_id.decode("utf-8", errors="replace")
                 # Guard against a now-stale entry: the row may have
-                # been processed since the push (e.g. by an earlier
+                # been processed since the SADD (e.g. by an earlier
                 # LIFO pick). Fall through to DB poll if so.
                 async with self._pool.acquire() as conn:
                     is_pending = await conn.fetchval(
@@ -181,7 +186,7 @@ class RagExplainer:
                 if is_pending:
                     return priority_id
         except Exception:  # noqa: BLE001
-            log.exception("priority-queue check failed; falling back to DB poll")
+            log.exception("priority-set check failed; falling back to DB poll")
 
         # 2. LIFO DB poll (newest pending first)
         async with self._pool.acquire() as conn:
