@@ -17,6 +17,7 @@ import {
   type UseQueryOptions,
 } from "@tanstack/react-query";
 import {
+  clearAllAnomalies,
   getAnomaly,
   getDrift,
   getExplanation,
@@ -147,6 +148,27 @@ interface UploadVars {
 export function useUpload() {
   return useMutation<UploadJobResponse, Error, UploadVars>({
     mutationFn: ({ file, rate }) => uploadLogFile(file, { rate }),
+  });
+}
+
+/**
+ * Mutation: wipe all anomalies + drift events. Used by the Upload page's
+ * "Clear previous anomalies" button so the user can run a fresh test
+ * upload without prior data polluting the dashboard.
+ *
+ * On success, invalidates every dashboard-relevant query so the empty
+ * state propagates immediately.
+ */
+export function useClearAnomalies() {
+  const qc = useQueryClient();
+  return useMutation<{ deleted: number }, Error, void>({
+    mutationFn: () => clearAllAnomalies(),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["anomalies"] });
+      qc.invalidateQueries({ queryKey: ["metrics-summary"] });
+      qc.invalidateQueries({ queryKey: ["timeline"] });
+      qc.invalidateQueries({ queryKey: ["drift"] });
+    },
   });
 }
 

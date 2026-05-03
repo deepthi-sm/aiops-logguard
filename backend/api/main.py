@@ -37,6 +37,59 @@ _started_at = time.monotonic()
 _log = logging.getLogger(__name__)
 
 
+_TRAINING_RUNS_SEED = (
+    # (started_at, completed_at, dataset, f1, precision, recall, path, notes)
+    (
+        "2026-05-02 18:00:00+00",
+        "2026-05-02 18:18:00+00",
+        "openstack",
+        0.936, 0.894, 0.982,
+        "artifacts_proper/openstack_only",
+        (
+            "Model A — OpenStack-only (207,801 windows). Honest 70/15/15 "
+            "split. Cross-domain failure on HDFS (F1=0.000) is the "
+            "headline finding that justifies Model B."
+        ),
+    ),
+    (
+        "2026-05-02 22:00:00+00",
+        "2026-05-02 22:16:00+00",
+        "openstack+hdfs-100k",
+        1.000, 1.000, 1.000,
+        "artifacts_proper/combined",
+        (
+            "Model B — Combined OS+HDFS (261,615 windows). lr=1e-4 + "
+            "grad-clip max_norm=1.0 + pos_weight cap=10. Diverged at the "
+            "original lr=2e-4; halving stabilised mixed-domain training."
+        ),
+    ),
+)
+
+
+async def _seed_training_runs(pool) -> None:
+    """Seed training_runs with our actual two model results if the
+    table is empty. Idempotent — re-running on a wipe re-populates so
+    the dashboard's run-history admin section always has demo data."""
+    async with pool.acquire() as conn:
+        existing = await conn.fetchval("SELECT COUNT(*) FROM training_runs")
+        if existing and int(existing) > 0:
+            return
+        from datetime import datetime
+        for r in _TRAINING_RUNS_SEED:
+            await conn.execute(
+                """
+                INSERT INTO training_runs
+                    (started_at, completed_at, dataset, f1_score,
+                     precision_score, recall_score, artifacts_path, notes)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                """,
+                datetime.fromisoformat(r[0]),
+                datetime.fromisoformat(r[1]),
+                r[2], r[3], r[4], r[5], r[6], r[7],
+            )
+        _log.info("training_runs auto-seeded with %d rows", len(_TRAINING_RUNS_SEED))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db_url = os.environ.get(DB_URL_ENV)
@@ -46,6 +99,7 @@ async def lifespan(app: FastAPI):
         async with pool.acquire() as conn:
             await install_jsonb_codec(conn)
         await apply_schema(pool)
+        await _seed_training_runs(pool)
         _log.info("postgres pool initialised + schema applied")
     else:
         _log.warning(

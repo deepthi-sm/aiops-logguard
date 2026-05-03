@@ -30,13 +30,16 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Annotated
 
 import redis.asyncio as redis_aio
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
+from pydantic import BaseModel
 
 from api.schemas import UploadJobResponse, UploadStatusResponse
 
@@ -44,11 +47,33 @@ from api.schemas import UploadJobResponse, UploadStatusResponse
 DEFAULT_RATE = 50
 MAX_RATE = 1000
 MAX_BYTES = 50 * 1024 * 1024  # 50 MB
-SOURCE_TAG = "user-upload"
+# Origin tag applied to every anomaly derived from a user upload — used by
+# the frontend's `/anomalies?origin=user-upload` filter to scope the list
+# to just-uploaded data. Distinct from the per-line `source` (parsed from
+# the filename) so the UI can display a meaningful host/service name.
+ORIGIN_TAG = "user-upload"
 LOGS_RAW_STREAM = "logs:raw"
 FIELD_LINE = "line"
 FIELD_SOURCE = "source"
+FIELD_ORIGIN = "origin"
 ALLOWED_SUFFIXES = (".log", ".txt")
+
+
+def _derive_source_from_filename(filename: str) -> str:
+    """Sanitise a filename into a `source` identifier for the anomaly.
+
+    Examples:
+      `BGL.log`        → `bgl`
+      `Thunderbolt.log`→ `thunderbolt`
+      `My Logs.txt`    → `my-logs`
+
+    Used as the anomaly's `source` so the dashboard groups all anomalies
+    from one upload coherently. The origin tag (FIELD_ORIGIN, set to
+    ORIGIN_TAG) is stored separately for filtering.
+    """
+    stem = Path(filename).stem.lower()
+    sanitised = re.sub(r"[^a-z0-9]+", "-", stem).strip("-")
+    return sanitised or "user-upload"
 
 router = APIRouter(prefix="/api/v1")
 
@@ -81,12 +106,14 @@ def _redis_url() -> str:
 # -- background streamer ----------------------------------------------------
 
 
-async def _stream_to_redis(job: _UploadJob, lines: list[str]) -> None:
+async def _stream_to_redis(job: _UploadJob, lines: list[str], source: str) -> None:
     """Background worker: xadd one line at a time at the configured rate.
 
-    Each xadd produces one event for the live ingestion runner to consume,
-    tagged so the postprocess layer can attribute the anomaly back to the
-    user-upload origin.
+    Each xadd produces one event for the live ingestion runner to consume.
+    `source` is the parsed/derived display identifier (e.g. "bgl"); the
+    origin tag (`ORIGIN_TAG = "user-upload"`) goes on a separate field so
+    the dashboard can filter user-uploaded anomalies without overloading
+    the displayed source.
     """
     if job.rate <= 0:
         job.status = "failed"
@@ -102,7 +129,7 @@ async def _stream_to_redis(job: _UploadJob, lines: list[str]) -> None:
         for line in lines:
             await redis_client.xadd(
                 LOGS_RAW_STREAM,
-                {FIELD_LINE: line, FIELD_SOURCE: SOURCE_TAG},
+                {FIELD_LINE: line, FIELD_SOURCE: source, FIELD_ORIGIN: ORIGIN_TAG},
             )
             job.lines_streamed += 1
             await asyncio.sleep(inter_line_delay)
@@ -183,6 +210,8 @@ async def upload_file(
             detail="Uploaded file has no non-blank lines.",
         )
 
+    source = _derive_source_from_filename(name)
+
     job_id = uuid.uuid4().hex[:12]
     job = _UploadJob(
         job_id=job_id,
@@ -191,13 +220,122 @@ async def upload_file(
         total_lines=len(lines),
     )
     _jobs[job_id] = job
-    job.task = asyncio.create_task(_stream_to_redis(job, lines))
+    job.task = asyncio.create_task(_stream_to_redis(job, lines, source))
 
     return UploadJobResponse(
         job_id=job_id,
         total_lines=job.total_lines,
         rate=job.rate,
         status=job.status,
+    )
+
+
+# -- /connect — server-side dataset streaming -----------------------------
+#
+# The Connect page lets the user paste a "datasource URL" (Redis-style,
+# Datadog-style, etc) and click Save. The URL is decorative — what
+# actually matters is the dataset *keyword* it contains, which we map
+# to a server-side sample log file. That file is then streamed into
+# Redis using the same `_stream_to_redis` path the /upload endpoint
+# uses, so the dashboard fills with anomalies just like a real
+# integration would.
+#
+# Mapping is keyword-based (case-insensitive). If no keyword matches,
+# we fall back to the OpenStack abnormal sample so the demo always
+# produces something interesting.
+SERVER_DATASETS: dict[str, Path] = {
+    "openstack": Path("training/data/openstack/openstack_abnormal.sample-500.log"),
+    "abnormal":  Path("training/data/openstack/openstack_abnormal.sample-500.log"),
+    "nova":      Path("training/data/openstack/openstack_abnormal.sample-500.log"),
+    "datadog":   Path("training/data/openstack/openstack_abnormal.sample-500.log"),
+    "apache":    Path("training/data/apache/Apache.sample-1000.log"),
+    "hdfs":      Path("training/data/hdfs/HDFS.sample-200.log"),
+    "splunk":    Path("training/data/openstack/openstack_normal2.sample-500.log"),
+    "elastic":   Path("training/data/openstack/openstack_normal2.sample-500.log"),
+}
+DEFAULT_DATASET_KEY = "openstack"
+
+
+def _resolve_dataset(*url_fields: str) -> tuple[str, Path]:
+    """Pick a server-side dataset based on keywords in the user's URL
+    fields. Returns `(dataset_key, file_path)`. Falls back to OpenStack
+    abnormal so the demo always lands on something with detectable
+    anomalies."""
+    haystack = " ".join(s.lower() for s in url_fields if s)
+    for keyword, path in SERVER_DATASETS.items():
+        if keyword in haystack:
+            return keyword, path
+    return DEFAULT_DATASET_KEY, SERVER_DATASETS[DEFAULT_DATASET_KEY]
+
+
+class ConnectRequest(BaseModel):
+    redis_url: str
+    log_file_path: str = ""
+    webhook_url: str = ""
+
+
+class ConnectResponse(BaseModel):
+    job_id: str
+    status: str
+    dataset: str           # which sample dataset got selected
+    total_lines: int
+    rate: int
+
+
+@router.post("/connect", response_model=ConnectResponse, status_code=202)
+async def connect_datasource(body: ConnectRequest) -> ConnectResponse:
+    """Trigger a server-side dataset stream from a "connection" form.
+
+    The Connect page POSTs the user's URL fields here. We pick a
+    server-side sample log based on keywords in those URLs, then
+    stream that file through the same pipeline as /upload — anomalies
+    appear on the dashboard tagged with the chosen dataset's source.
+    """
+    if not body.redis_url.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Redis URL is required.",
+        )
+
+    dataset_key, file_path = _resolve_dataset(
+        body.redis_url, body.log_file_path, body.webhook_url,
+    )
+    full_path = file_path
+    if not full_path.is_absolute():
+        # Resolve relative to backend/ so it works regardless of CWD.
+        full_path = Path(__file__).resolve().parent.parent / file_path
+    if not full_path.exists():
+        raise HTTPException(
+            status_code=500,
+            detail=f"Demo dataset {dataset_key!r} not found on server at {full_path}",
+        )
+
+    text = full_path.read_text(encoding="utf-8", errors="replace")
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Demo dataset {dataset_key!r} is empty",
+        )
+
+    job_id = uuid.uuid4().hex[:12]
+    job = _UploadJob(
+        job_id=job_id,
+        status="queued",
+        rate=DEFAULT_RATE,
+        total_lines=len(lines),
+    )
+    _jobs[job_id] = job
+    # Source = dataset_key so the dashboard groups all "connect"-driven
+    # anomalies under that label (e.g. source="openstack").
+    job.task = asyncio.create_task(_stream_to_redis(job, lines, dataset_key))
+
+    return ConnectResponse(
+        job_id=job_id,
+        status="queued",
+        dataset=dataset_key,
+        total_lines=len(lines),
+        rate=DEFAULT_RATE,
     )
 
 

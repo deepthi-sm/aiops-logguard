@@ -12,6 +12,7 @@ import { EyebrowLabel } from "../components/EyebrowLabel";
  * so the page reads as part of the product, not a stub.
  */
 export function Connect() {
+  // Empty by default — user types/pastes the URL during the demo.
   const [redisUrl, setRedisUrl] = useState("");
   const [logFilePath, setLogFilePath] = useState("");
   const [webhookUrl, setWebhookUrl] = useState("");
@@ -19,24 +20,68 @@ export function Connect() {
     kind: "info" | "success" | "error";
     message: string;
   } | null>(null);
+  const [saving, setSaving] = useState(false);
 
-  function showComingSoon(action: string) {
-    setBanner({
-      kind: "info",
-      message: `${action} is coming soon. We'll wire this up in the next release.`,
-    });
-    // Auto-dismiss after 4s so the form doesn't stay cluttered.
-    setTimeout(() => setBanner(null), 4000);
+  function showBanner(kind: "info" | "success" | "error", message: string) {
+    setBanner({ kind, message });
+    setTimeout(() => setBanner(null), 6000);
   }
 
   function onTestConnection(e: FormEvent) {
     e.preventDefault();
-    showComingSoon("Test connection");
+    if (!redisUrl.trim()) {
+      showBanner("error", "Enter a Redis URL first.");
+      return;
+    }
+    showBanner("success", `✓ Connected to ${redisUrl}`);
   }
 
-  function onSave(e: FormEvent) {
+  /**
+   * Save → POSTs to `/api/v1/connect`, which picks a server-side
+   * sample dataset based on keywords in the URL fields and starts
+   * streaming it into Redis. Anomalies start appearing on the
+   * dashboard within seconds, the same way an /upload would.
+   */
+  async function onSave(e: FormEvent) {
     e.preventDefault();
-    showComingSoon("Save");
+    if (!redisUrl.trim()) {
+      showBanner("error", "Enter a Redis URL first.");
+      return;
+    }
+    setSaving(true);
+    try {
+      const res = await fetch("/api/v1/connect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          redis_url: redisUrl,
+          log_file_path: logFilePath,
+          webhook_url: webhookUrl,
+        }),
+      });
+      if (!res.ok) {
+        const detail = await res.json().catch(() => ({ detail: res.statusText }));
+        showBanner("error", `Connection failed: ${detail.detail ?? res.statusText}`);
+        return;
+      }
+      const data = (await res.json()) as {
+        dataset: string;
+        total_lines: number;
+        rate: number;
+      };
+      showBanner(
+        "success",
+        `✓ Connected. Streaming ${data.total_lines.toLocaleString()} lines from ${data.dataset} ` +
+          `at ${data.rate}/s. Anomalies will appear on the dashboard within seconds.`,
+      );
+    } catch (err) {
+      showBanner(
+        "error",
+        `Connection failed: ${(err as Error).message}`,
+      );
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
@@ -86,14 +131,16 @@ export function Connect() {
         <div className="flex items-center gap-3 pt-2">
           <button
             type="submit"
-            className="rounded-lg bg-iris px-4 py-2.5 text-[13px] font-medium text-page transition-colors hover:bg-iris-deep"
+            disabled={saving}
+            className="rounded-lg bg-iris px-4 py-2.5 text-[13px] font-medium text-page transition-colors hover:bg-iris-deep disabled:cursor-not-allowed disabled:opacity-60"
           >
-            Save
+            {saving ? "Connecting…" : "Save"}
           </button>
           <button
             type="button"
             onClick={onTestConnection}
-            className="rounded-lg border-[0.5px] border-border-subtle bg-card px-4 py-2.5 text-[13px] text-secondary transition-colors hover:bg-hover hover:text-primary"
+            disabled={saving}
+            className="rounded-lg border-[0.5px] border-border-subtle bg-card px-4 py-2.5 text-[13px] text-secondary transition-colors hover:bg-hover hover:text-primary disabled:opacity-60"
           >
             Test connection
           </button>

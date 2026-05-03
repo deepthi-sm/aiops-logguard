@@ -5,6 +5,14 @@ import { useUpload, useUploadStatus } from "../api/queries";
 import { EyebrowLabel } from "../components/EyebrowLabel";
 import { cn } from "../lib/cn";
 
+// localStorage key for the in-progress upload's job id. Survives full
+// route navigation (sidebar clicks → URL changes → /upload?job=... is
+// lost). When the Upload page mounts without a `?job=` query param, we
+// check this key and rehydrate from it — so the user can leave the
+// upload running, browse around, come back, and still see the
+// progress card.
+const ACTIVE_JOB_KEY = "logguard_active_upload";
+
 /**
  * /upload — push a user-supplied .log/.txt file into the live ingestion
  * pipeline.
@@ -12,7 +20,7 @@ import { cn } from "../lib/cn";
  *   1. Pick a file (`.log` or `.txt`, <= 50 MB)
  *   2. Click Upload
  *   3. Backend returns a job_id; we poll `/upload/{id}/status` every 2s
- *   4. When the job hits `completed`, redirect to `/anomalies?source=user-upload`
+ *   4. When the job hits `completed`, redirect to `/anomalies?origin=user-upload`
  *      so the user sees the anomalies derived from their file
  *
  * The hidden `?rate=N` URL param (default 50, max 1000) accelerates
@@ -20,7 +28,7 @@ import { cn } from "../lib/cn";
  * push 500 lines/sec instead of the default 50.
  */
 export function Upload() {
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
 
   // Hidden demo-friendly rate override from the URL. Capped at 1000 to
@@ -34,24 +42,85 @@ export function Upload() {
     return n;
   }, [searchParams]);
 
+  // jobId is persisted in BOTH the URL (?job=<id>) and localStorage so
+  // that the upload progress card survives every kind of navigation:
+  //
+  //   - URL only:  refreshing the page or sharing the URL works
+  //   - localStorage only: clicking a sidebar link (which replaces the
+  //     URL entirely) and then coming back to /upload still finds the
+  //     in-progress job
+  //
+  // On mount, if URL has no ?job= but localStorage does, we hydrate
+  // back into the URL so polling resumes immediately.
+  const urlJob = searchParams.get("job");
+  const jobId = urlJob;
+
   const [file, setFile] = useState<File | null>(null);
   const [validationError, setValidationError] = useState<string | null>(null);
-  const [jobId, setJobId] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const upload = useUpload();
   const status = useUploadStatus(jobId);
 
-  // When the polled status hits `completed`, redirect after a short
-  // delay so the user can read the "Done!" line. `failed` stays on this
-  // page with the error visible.
+  function setJobId(id: string | null) {
+    const next = new URLSearchParams(searchParams);
+    if (id) {
+      next.set("job", id);
+      try { localStorage.setItem(ACTIVE_JOB_KEY, id); } catch { /* storage disabled */ }
+    } else {
+      next.delete("job");
+      try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch { /* noop */ }
+    }
+    setSearchParams(next, { replace: true });
+  }
+
+  // Rehydrate from localStorage on mount when URL has no ?job=. We use
+  // a layout-effect-style sync inside useEffect with empty deps so this
+  // fires exactly once per mount.
   useEffect(() => {
-    if (status.data?.status === "completed") {
+    if (urlJob) return;
+    let stored: string | null = null;
+    try { stored = localStorage.getItem(ACTIVE_JOB_KEY); } catch { /* noop */ }
+    if (stored) {
+      const next = new URLSearchParams(searchParams);
+      next.set("job", stored);
+      setSearchParams(next, { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Track whether the user has actively watched this upload (i.e. seen
+  // a non-terminal status during the current mount). Distinguishes
+  // "active watch about to finish" → redirect, from "returned to a job
+  // that finished while we were elsewhere" → silently clear, render the
+  // file picker. Without this distinction we'd flash a stale 100% bar
+  // and re-trigger the auto-redirect every time the user revisits.
+  const sawRunningRef = useRef(false);
+
+  useEffect(() => {
+    const s = status.data?.status;
+    if (!s) return;
+
+    if (s === "queued" || s === "running") {
+      sawRunningRef.current = true;
+      return;
+    }
+
+    // Terminal — clear localStorage so this job can't resurrect later.
+    try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch { /* noop */ }
+
+    if (sawRunningRef.current && s === "completed") {
+      // Active watcher: 1.2s "Done!" beat, then redirect.
       const t = setTimeout(() => {
-        navigate("/anomalies?source=user-upload");
+        navigate("/anomalies?origin=user-upload");
       }, 1200);
       return () => clearTimeout(t);
     }
+
+    // Came back to a job that's already terminal. Drop ?job= from the
+    // URL so the page renders the picker instead of a stale progress
+    // card. Don't redirect — the user navigated here deliberately.
+    setJobId(null);
   }, [status.data?.status, navigate]);
 
   function onFileChange(e: ChangeEvent<HTMLInputElement>) {
@@ -119,7 +188,7 @@ export function Upload() {
         <p className="mt-2 max-w-[640px] text-[13px] text-secondary">
           Push a `.log` or `.txt` file into the live ingestion pipeline.
           Anomalies derived from your file appear in the dashboard tagged{" "}
-          <code className="font-mono text-primary">source=user-upload</code>.
+          <code className="font-mono text-primary">origin=user-upload</code>.
         </p>
       </header>
 
@@ -204,7 +273,7 @@ export function Upload() {
               {completed && (
                 <button
                   type="button"
-                  onClick={() => navigate("/anomalies?source=user-upload")}
+                  onClick={() => navigate("/anomalies?origin=user-upload")}
                   className="rounded-lg bg-iris px-4 py-2.5 text-[13px] font-medium text-page transition-colors hover:bg-iris-deep"
                 >
                   View anomalies →

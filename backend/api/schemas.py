@@ -39,6 +39,11 @@ ExplanationStatus = Literal["pending", "ready", "failed"]
 Feedback = Literal["true_positive", "false_positive"]
 TimelineWindow = Literal["1h", "24h", "7d"]
 DriftLevel = Literal["healthy", "drift_high", "drift_critical"]
+# `origin` is the entry-point tag for filtering — distinct from `source`,
+# which is the parsed host/service identifier displayed in the UI.
+#   "live-stream"  → emitted by the live ingestion runner
+#   "user-upload"  → emitted by a /upload streaming job
+Origin = Literal["live-stream", "user-upload"]
 
 
 # ---------- Health ----------
@@ -61,6 +66,7 @@ class Anomaly(BaseModel):
     detected_at: IsoUtcDatetime
     severity: Severity
     source: str
+    origin: Origin = "live-stream"
     ensemble_score: float = Field(ge=0.0, le=1.0)
     confidence: float = Field(ge=0.0, le=1.0)
     failure_probability: float = Field(ge=0.0, le=1.0)
