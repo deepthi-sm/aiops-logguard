@@ -313,38 +313,43 @@ def calibrate(
             f"thresh={grid.anomaly_threshold:.2f}  F1={grid.f1:.3f}"
         )
 
-    # -- Confidence target: margin from the calibrated decision boundary -----
+    # -- Confidence target: DIRECTIONAL margin from the decision boundary ----
     #
-    # The original implementation trained the MLP on `correctness =
-    # (preds == labels)`. That looked principled but degenerates badly:
-    # when the ensemble grid-search achieves high training F1 (which our
-    # OpenStack baseline does at F1=1.000), every prediction matches its
-    # label, so `correctness` is all 1s. The MLP then learns to emit a
-    # huge positive logit regardless of input; sigmoid saturates to 1.0
-    # for every prediction at inference. Empirical proof: the live DB had
-    # MIN=MAX=AVG=1.0000, 1 distinct value across 4908+ rows.
+    # Two prior bugs we are jointly correcting here:
     #
-    # The replacement target — normalised distance from the decision
-    # boundary — varies even on a perfect classifier. Decisive predictions
-    # (combined score far from threshold in either direction) get target
-    # ≈ 1; borderline predictions (combined ≈ threshold) get target ≈ 0.
-    # The MLP now learns a meaningful, monotone function from features to
-    # decisiveness, which is what users actually want from a confidence
-    # score: "how sure is the model about this call?"
+    #   v1 (`correctness = (preds == labels)`): degenerated to all-1s on a
+    #   high-F1 grid, MLP learned a constant high logit, live DB confidence
+    #   was MIN=MAX=AVG=1.0000 across 4908+ rows.
     #
-    # Paper-side framing: confidence is the model's estimate of its
-    # margin from the calibrated decision boundary, in [0, 1].
+    #   v2 (`margin_target = |combined - threshold|`): direction-blind. With
+    #   class imbalance the MLP learned that decisive *negatives* (well
+    #   below threshold) deserved high confidence — so on the eval grid
+    #   `mean_conf(TP)=0.024` vs `mean_conf(TN)=0.354`, the AND gate
+    #   (`ensemble ≥ τ_a AND confidence ≥ τ_c`) suppressed every true
+    #   positive on Model A → F1=0.000 even though AUC=0.996. Diagnosed
+    #   via `_diagnose_eval.py`.
+    #
+    # The fix: multiply the margin by `correct ∈ {0, 1}`. A *correct*
+    # decisive prediction gets a high target; a *wrong* decisive prediction
+    # gets target=0 even though its margin is large. This is what the live
+    # confidence gate actually needs to filter out.
+    #
+    # Doesn't degenerate at high F1 (correct=1 still varies via margin).
+    # Respects direction (wrong predictions get target=0). Lives are saved.
     combined = grid.w1 * transformer_scores + grid.w2 * ae_norm
+    preds = (combined >= grid.anomaly_threshold).astype(np.int64)
+    correct = (preds == labels.astype(np.int64)).astype(np.float32)
     distance = np.abs(combined - grid.anomaly_threshold)
     max_distance = max(grid.anomaly_threshold, 1.0 - grid.anomaly_threshold)
-    margin_target = np.clip(distance / max_distance, 0.0, 1.0).astype(np.float32)
+    margin = np.clip(distance / max_distance, 0.0, 1.0).astype(np.float32)
+    directional_target = (correct * margin).astype(np.float32)
 
     features = build_confidence_features(transformer_scores, ae_norm)
     confidence_model, conf_metrics = train_confidence_scorer(
-        features, margin_target, device=device, verbose=verbose
+        features, directional_target, device=device, verbose=verbose
     )
     confidence_threshold = pick_confidence_threshold(
-        confidence_model, features, margin_target, device=device
+        confidence_model, features, directional_target, device=device
     )
     save_confidence_torchscript(confidence_model, confidence_out)
     save_thresholds(

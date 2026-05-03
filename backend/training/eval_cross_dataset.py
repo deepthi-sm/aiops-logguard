@@ -124,15 +124,22 @@ def predict_anomalies(detector: Detector, embeddings: np.ndarray) -> np.ndarray:
     via TorchScript with `(B, L, D)` shape but for a clean "treat each
     window independently" result we go one at a time. This is fine for
     a one-shot eval (~minutes); the live runner has its own batched
-    path."""
+    path.
+
+    NOTE: paper F1 uses the ENSEMBLE gate alone, mirroring
+    `eval_holdout_openstack.metrics_for_split`. The confidence gate is
+    an operational filter (live alerts only) and shouldn't contaminate
+    the offline metric. The live `Detector.is_anomaly` path is unchanged.
+    """
     if embeddings.ndim != 3:
         raise ValueError(
             f"expected (N, window_len, sbert_dim), got shape {embeddings.shape}"
         )
     out = np.zeros(embeddings.shape[0], dtype=bool)
+    threshold = detector.thresholds.anomaly_threshold
     for i in range(embeddings.shape[0]):
         result: DetectionResult = detector.score(embeddings[i])
-        out[i] = detector.is_anomaly(result)
+        out[i] = result.ensemble_score >= threshold
     return out
 
 

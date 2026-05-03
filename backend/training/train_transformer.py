@@ -6,12 +6,14 @@ embeddings + per-window labels, trains the two-headed transformer, saves
 a TorchScript artifact at `artifacts/transformer.pt`.
 
 Per docs/architecture/training_pipeline.md Step 4:
-  * Optimiser: AdamW, lr=2e-4, weight_decay=0.01
+  * Optimiser: AdamW, lr=1e-4, weight_decay=0.01
+  * Gradient clipping: max_norm=1.0 (always-on)
   * Schedule: cosine annealing
   * Batch size: 64, epochs: 30
   * Early stop: patience=5 on validation F1
-  * Loss: BCE for anomaly head + MSE for failure-window head
-    (MSE only contributes when failure_minutes is provided)
+  * Loss: BCE (with pos_weight, capped at 10) for the anomaly head +
+    MSE for the failure-window head (MSE only contributes when
+    failure_minutes is provided)
 
 CLI:
     python -m training.train_transformer \\
@@ -41,17 +43,30 @@ from ml.transformer import LogTransformer
 class TrainConfig:
     epochs: int = 30
     batch_size: int = 64
-    lr: float = 2e-4
+    # lr=1e-4: halved from 2e-4 after the Combined (OpenStack + HDFS)
+    # transformer diverged at the higher rate (loss climbed
+    # 0.65 -> 1.07 across epochs 1-5, predictions froze in a degenerate
+    # local minimum, F1 collapsed from 0.588 to 0.000 by epoch 6).
+    # OpenStack-only converged fine at 2e-4 because its training set is
+    # uniform; mixed-domain training requires a smaller step. The
+    # cached OpenStack model is unaffected on resume — its `transformer.pt`
+    # already exists and the orchestrator skips re-training it.
+    lr: float = 1e-4
     weight_decay: float = 0.01
     early_stop_patience: int = 5
     val_split: float = 0.2
     seed: int = 42
-    # Class-weighted BCE — counters the trivial-classifier collapse that BCE
-    # falls into on imbalanced data. Auto-computed from the train split as
-    # `n_negatives / n_positives` and capped at 100. Disable for experiments
-    # where you want vanilla BCE behaviour.
+    # Class-weighted BCE — counters the trivial-classifier collapse that
+    # BCE falls into on imbalanced data. Auto-computed from the train
+    # split as `n_negatives / n_positives` and capped at 10.
+    #
+    # The cap was 100 originally but produced unstable gradients on
+    # extreme imbalances (a 1%-positive corpus would otherwise hit
+    # pos_weight=99 and almost certainly diverge). 10 is the standard
+    # "safe" upper bound and still strong enough to reweight a
+    # 9%-positive dataset meaningfully without destabilising training.
     use_pos_weight: bool = True
-    pos_weight_cap: float = 100.0
+    pos_weight_cap: float = 10.0
 
 
 # -- Loss ------------------------------------------------------------------
@@ -216,6 +231,13 @@ def train(
             out = model(xb)
             loss, bce, mse = _two_headed_loss(out, yb, fb, mb, pos_weight=pos_weight)
             loss.backward()
+            # Always-on safety belt against gradient explosions on harder
+            # datasets (cross-domain mixing, long-sequence attention
+            # instabilities). max_norm=1.0 is the standard value for
+            # transformer training; it bounds the per-step gradient
+            # magnitude without affecting healthy gradients in steady
+            # state.
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimiser.step()
 
             train_loss_acc += float(loss.item())

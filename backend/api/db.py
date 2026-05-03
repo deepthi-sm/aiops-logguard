@@ -29,12 +29,22 @@ DEFAULT_POOL_TIMEOUT_S = 30.0
 
 
 async def create_pool(url: str) -> asyncpg.Pool:
-    """Build a fresh asyncpg pool. Used by the FastAPI lifespan and tests."""
+    """Build a fresh asyncpg pool. Used by the FastAPI lifespan and tests.
+
+    Installs the JSONB codec on every new connection so JSONB columns
+    deserialise to Python lists/dicts instead of raw JSON strings.
+    Without this, the list and detail endpoints 500 on the first
+    `item["line"]` access in `hydrate_anomaly`.
+    """
+    # Local import avoids a circular: api.repository imports api.db.
+    from api.repository import install_jsonb_codec
+
     return await asyncpg.create_pool(
         url,
         min_size=DEFAULT_POOL_MIN_SIZE,
         max_size=DEFAULT_POOL_MAX_SIZE,
         timeout=DEFAULT_POOL_TIMEOUT_S,
+        init=install_jsonb_codec,
     )
 
 
