@@ -89,14 +89,16 @@ class OllamaClient:
                 # output across reruns. Low temperature; the spec ranks
                 # consistency over creativity for SRE incident summaries.
                 "temperature": 0.2,
-                # Cap response length. Without this, the 8B will
+                # Cap response length. Without this, the model will
                 # generate ~400-600 tokens for a typical incident
-                # (~60-90s on CPU). 200 tokens is enough for the
-                # root-cause + recommended-fix sections (each ~3-5
-                # sentences) and brings per-call latency down to
-                # ~20-30s — a 3x speedup that meaningfully improves
-                # the demo UX without truncating useful output.
-                "num_predict": 200,
+                # (~60-90s on CPU even on llama3.2:1b). 100 tokens is
+                # enough for a 2-3 sentence root-cause + a numbered
+                # 3-step fix list, and brings per-call latency down
+                # to ~15-18s — meaningful for the rare cache-miss
+                # path. The fast path is the precomputed cache (sub-
+                # second), so we optimise this for "best fallback we
+                # can get" rather than "always fast".
+                "num_predict": 100,
             },
         }
         log.debug("ollama: POST %s model=%s", url, self._model)

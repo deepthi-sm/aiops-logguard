@@ -62,6 +62,120 @@ class ExplainerStats:
     explained: int = 0
     failed: int = 0
     not_found: int = 0  # anomaly id arrived but no DB row
+    cache_hits: int = 0      # served from precomputed cache (sub-second)
+    cache_misses: int = 0    # fell through to live LLaMA
+
+
+# -- precomputed-explanation cache ----------------------------------------
+
+
+@dataclass
+class _CacheEntry:
+    """One precomputed explanation, keyed by SBERT embedding similarity."""
+    embedding: np.ndarray  # (384,) float32, unit-norm
+    template_pattern: str
+    root_cause: str
+    recommended_fix: str
+    similar_incidents: list[SimilarIncident]
+
+
+class ExplanationCache:
+    """In-memory cache of precomputed explanations.
+
+    Loaded once at worker startup from
+    `backend/artifacts/precomputed_explanations.json`. The lookup is
+    a cosine-similarity match against the anomaly's already-computed
+    SBERT embedding — same vector the FAISS query uses, so the cache
+    check costs O(N * 384) FLOPs where N ≈ 17. Sub-millisecond.
+
+    When the max similarity ≥ `match_threshold` (default 0.85), the
+    cached payload is returned and the worker skips FAISS + LLaMA.
+    """
+
+    def __init__(self, entries: list[_CacheEntry], match_threshold: float = 0.85):
+        self._entries = entries
+        self._threshold = match_threshold
+        # Stack embeddings into a (N, 384) matrix for one matmul per lookup.
+        if entries:
+            self._matrix = np.stack([e.embedding for e in entries]).astype(np.float32)
+        else:
+            self._matrix = np.zeros((0, 384), dtype=np.float32)
+
+    @property
+    def size(self) -> int:
+        return len(self._entries)
+
+    @property
+    def match_threshold(self) -> float:
+        return self._threshold
+
+    @classmethod
+    def load(cls, path: Path | str) -> ExplanationCache | None:
+        """Load from the precompute artifact. Returns None if the file
+        is missing — caller should fall back to live LLaMA only."""
+        p = Path(path)
+        if not p.exists():
+            log.info("cache: %s not found — operating without fast-path cache", p)
+            return None
+        try:
+            payload = json.loads(p.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as e:
+            log.exception("cache: failed to load %s: %s", p, e)
+            return None
+
+        entries: list[_CacheEntry] = []
+        for raw in payload.get("entries", []):
+            try:
+                emb = np.asarray(raw["embedding"], dtype=np.float32)
+                # Defensive re-normalisation — JSON round-trip can
+                # introduce float precision drift.
+                n = float(np.linalg.norm(emb))
+                if n > 1e-9:
+                    emb = (emb / n).astype(np.float32)
+                similar = [
+                    SimilarIncident(
+                        incident_id=s["incident_id"],
+                        template=s["template"],
+                        resolved_at=s.get("resolved_at"),
+                        similarity_score=float(s["similarity_score"]),
+                    )
+                    for s in raw.get("similar_incidents", [])
+                ]
+                entries.append(_CacheEntry(
+                    embedding=emb,
+                    template_pattern=raw["template_pattern"],
+                    root_cause=raw["root_cause"],
+                    recommended_fix=raw["recommended_fix"],
+                    similar_incidents=similar,
+                ))
+            except (KeyError, TypeError, ValueError):
+                log.exception("cache: skipping malformed entry")
+                continue
+        threshold = float(payload.get("match_threshold", 0.85))
+        log.info(
+            "cache: loaded %d entries from %s (match_threshold=%.2f)",
+            len(entries), p, threshold,
+        )
+        return cls(entries, match_threshold=threshold)
+
+    def lookup(self, query_emb: np.ndarray) -> tuple[_CacheEntry, float] | None:
+        """Find the best-matching cache entry. Returns `(entry, score)`
+        if the top match clears the threshold; None otherwise.
+
+        `query_emb` should be unit-norm (384,) — same shape the
+        explainer's `_embed_template` produces. Caller is responsible
+        for that.
+        """
+        if not self._entries:
+            return None
+        q = query_emb.reshape(-1).astype(np.float32)
+        # All entries are unit-norm; q is unit-norm; matmul = cosine.
+        scores = self._matrix @ q
+        best_idx = int(np.argmax(scores))
+        best_score = float(scores[best_idx])
+        if best_score >= self._threshold:
+            return self._entries[best_idx], best_score
+        return None
 
 
 # -- the worker ------------------------------------------------------------
@@ -92,6 +206,7 @@ class RagExplainer:
         faiss: FaissClient,
         llama: LlamaClientLike,
         top_k: int = DEFAULT_TOP_K,
+        cache: ExplanationCache | None = None,
     ) -> None:
         self._pool = pool
         self._subscriber = subscriber
@@ -99,6 +214,12 @@ class RagExplainer:
         self._faiss = faiss
         self._llama = llama
         self._top_k = top_k
+        # Optional fast-path cache. When the anomaly's log_template
+        # SBERT-embeds within `cache.match_threshold` cosine of a
+        # precomputed entry, we skip FAISS + LLaMA entirely and write
+        # the cached payload to the DB. Cache miss → fall through to
+        # the live RAG pipeline.
+        self._cache = cache
         self.stats = ExplainerStats()
 
     async def run(self) -> None:
@@ -206,8 +327,34 @@ class RagExplainer:
             self.stats.not_found += 1
             return
 
-        # 1. embed the anomaly's log template
+        # 1. embed the anomaly's log template (used for both cache
+        #    lookup AND FAISS retrieval — single SBERT call either way).
         query_vec = self._embed_template(anomaly.log_template)
+
+        # 1a. Fast-path: cache hit?
+        if self._cache is not None:
+            hit = self._cache.lookup(query_vec.reshape(-1))
+            if hit is not None:
+                entry, score = hit
+                ok = await repository.update_explanation(
+                    self._pool, anomaly_id,
+                    root_cause=entry.root_cause,
+                    recommended_fix=entry.recommended_fix,
+                    similar_incidents=list(entry.similar_incidents),
+                    status="ready",
+                )
+                if not ok:
+                    log.warning("explainer: cache-hit update returned 0 rows for %s", anomaly_id)
+                    self.stats.not_found += 1
+                    return
+                self.stats.cache_hits += 1
+                self.stats.explained += 1
+                log.info(
+                    "explainer: %s ready (cache hit, score=%.3f, pattern=%r)",
+                    anomaly_id, score, entry.template_pattern[:60],
+                )
+                return
+            self.stats.cache_misses += 1
 
         # 2. retrieve top-K similar prior incidents from FAISS
         retrieved = self._faiss.query(query_vec, k=self._top_k)
@@ -243,7 +390,7 @@ class RagExplainer:
 
         self.stats.explained += 1
         log.info(
-            "explainer: %s ready (k=%d, model=%s)",
+            "explainer: %s ready (live LLaMA, k=%d, model=%s)",
             anomaly_id, len(retrieved),
             getattr(self._llama, "model", "<unknown>"),
         )
@@ -331,13 +478,23 @@ class ExplainerResources:
     others: list = field(default_factory=list)
 
 
+DEFAULT_CACHE_PATH = Path(__file__).resolve().parent.parent / "artifacts" / "precomputed_explanations.json"
+
+# top_k for the LIVE LLaMA path. Reduced from the FAISS-default 3 to 1
+# so the prompt is shorter and Ollama generation is ~30% faster on the
+# rare cache-miss case. The precompute script uses k=3 itself for
+# richer cached explanations — only the runtime worker is tightened.
+LIVE_TOP_K = 1
+
+
 async def build_default_explainer(
     *,
     redis_url: str | None = None,
     db_url: str | None = None,
     index_path: str | Path | None = None,
     records_path: str | Path | None = None,
-    top_k: int = DEFAULT_TOP_K,
+    top_k: int = LIVE_TOP_K,
+    cache_path: str | Path | None = None,
 ) -> tuple[RagExplainer, ExplainerResources]:
     """Wire up the production explainer from env vars / defaults.
 
@@ -378,6 +535,9 @@ async def build_default_explainer(
             llama.base_url,
         )
 
+    cache_p = Path(cache_path) if cache_path is not None else DEFAULT_CACHE_PATH
+    cache = ExplanationCache.load(cache_p)
+
     explainer = RagExplainer(
         pool=pool,
         subscriber=subscriber,
@@ -385,6 +545,7 @@ async def build_default_explainer(
         faiss=faiss,
         llama=llama,
         top_k=top_k,
+        cache=cache,
     )
     resources = ExplainerResources(pool=pool, subscriber=subscriber, llama=llama)
     return explainer, resources
