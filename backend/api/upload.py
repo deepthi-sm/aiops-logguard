@@ -272,28 +272,38 @@ async def upload_file(
 # we fall back to the OpenStack abnormal sample so the demo always
 # produces something interesting.
 SERVER_DATASETS: dict[str, Path] = {
+    # Only EXPLICIT keyword matches route to a file. OpenStack is kept
+    # so users who paste a URL containing "openstack" still get
+    # OpenStack-flavored data; the same goes for "apache" and "hdfs".
+    # Removed: "nova", "datadog", "splunk", "elastic" — those used to
+    # route to OpenStack files (see Issue 3 fix), making the demo
+    # default uniformly high-confidence and "flat-confident". Now
+    # they fall through to the synthetic mix, which exercises the
+    # paper's confidence-variance claim properly.
     "openstack": Path("training/data/openstack/openstack_abnormal.sample-500.log"),
     "abnormal":  Path("training/data/openstack/openstack_abnormal.sample-500.log"),
-    "nova":      Path("training/data/openstack/openstack_abnormal.sample-500.log"),
-    "datadog":   Path("training/data/openstack/openstack_abnormal.sample-500.log"),
     "apache":    Path("training/data/apache/Apache.sample-1000.log"),
     "hdfs":      Path("training/data/hdfs/HDFS.sample-200.log"),
-    "splunk":    Path("training/data/openstack/openstack_normal2.sample-500.log"),
-    "elastic":   Path("training/data/openstack/openstack_normal2.sample-500.log"),
 }
-DEFAULT_DATASET_KEY = "openstack"
 
 
-def _resolve_dataset(*url_fields: str) -> tuple[str, Path]:
+def _resolve_dataset(*url_fields: str) -> tuple[str, Path | None]:
     """Pick a server-side dataset based on keywords in the user's URL
-    fields. Returns `(dataset_key, file_path)`. Falls back to OpenStack
-    abnormal so the demo always lands on something with detectable
-    anomalies."""
+    fields. Returns `(dataset_label, file_path_or_None)`.
+
+    When no keyword matches, returns `("demo-mix", None)`: the caller
+    synthesizes a BGL+Thunderbird+HDFS+critical mix via
+    `demo_stream._gen_event` instead of reading a file. This avoids
+    defaulting to OpenStack — the model is in-distribution on
+    OpenStack and saturates near 1.0 on every window, which makes the
+    demo dashboard look "flat-confident" rather than showing the real
+    confidence variance the paper claims.
+    """
     haystack = " ".join(s.lower() for s in url_fields if s)
     for keyword, path in SERVER_DATASETS.items():
         if keyword in haystack:
             return keyword, path
-    return DEFAULT_DATASET_KEY, SERVER_DATASETS[DEFAULT_DATASET_KEY]
+    return "demo-mix", None  # synthesize via demo_stream generator
 
 
 class ConnectRequest(BaseModel):
@@ -396,31 +406,48 @@ async def connect_datasource(body: ConnectRequest) -> ConnectResponse:
     # Path 2: keyword fallback (no HTTP fetch attempted, OR the fetch
     # didn't yield usable NDJSON)
     if typed_lines is None:
-        dataset_key, file_path = _resolve_dataset(
+        dataset_label, file_path = _resolve_dataset(
             body.redis_url, body.log_file_path, body.webhook_url,
         )
-        full_path = file_path
-        if not full_path.is_absolute():
-            full_path = Path(__file__).resolve().parent.parent / file_path
-        if not full_path.exists():
-            raise HTTPException(
-                status_code=500,
-                detail=(
-                    f"Demo dataset {dataset_key!r} not found on server "
-                    f"at {full_path}"
-                ),
-            )
-        text = full_path.read_text(encoding="utf-8", errors="replace")
-        raw_lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-        if not raw_lines:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Demo dataset {dataset_key!r} is empty",
-            )
-        if len(raw_lines) > MAX_LINES:
-            raw_lines = raw_lines[:MAX_LINES]
-        typed_lines = [(ln, dataset_key) for ln in raw_lines]
-        dataset_label = dataset_key
+
+        if file_path is not None:
+            # Keyword matched a server-side sample file — read it.
+            full_path = file_path
+            if not full_path.is_absolute():
+                full_path = Path(__file__).resolve().parent.parent / file_path
+            if not full_path.exists():
+                raise HTTPException(
+                    status_code=500,
+                    detail=(
+                        f"Demo dataset {dataset_label!r} not found on "
+                        f"server at {full_path}"
+                    ),
+                )
+            text = full_path.read_text(encoding="utf-8", errors="replace")
+            raw_lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+            if not raw_lines:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Demo dataset {dataset_label!r} is empty",
+                )
+            if len(raw_lines) > MAX_LINES:
+                raw_lines = raw_lines[:MAX_LINES]
+            typed_lines = [(ln, dataset_label) for ln in raw_lines]
+        else:
+            # No keyword match — synthesize via the demo_stream
+            # generator. Same templates the public /demo/stream
+            # endpoint serves: BGL+Thunderbird+HDFS+critical mix.
+            # This is the "no OpenStack as default" branch — keeps
+            # the demo's confidence variance + severity diversity
+            # even when the URL is decorative.
+            import random
+
+            from api.demo_stream import _gen_event
+            rng = random.Random(42)
+            typed_lines = []
+            for _ in range(500):
+                ev = _gen_event(rng)
+                typed_lines.append((ev["line"], ev["source"]))
 
     job_id = uuid.uuid4().hex[:12]
     job = _UploadJob(

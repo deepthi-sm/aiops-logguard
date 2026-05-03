@@ -101,6 +101,19 @@ DEFAULT_CRITICAL_SOURCES: frozenset[str] = frozenset({
     # Demo / replay sources used by tools/log_replay.py and the live
     # ingestion runner when source can't be inferred from the line.
     "mixed",
+    # Demo dataset slugs — the /upload flow derives source from the
+    # filename stem (e.g. `BGL.log` -> "bgl", `BGL_2k.log` -> "bgl-2k").
+    # Adding the common slugs here lets uploads of those files fire
+    # `critical` when the score crosses 0.95, so the dashboard's
+    # three-tier severity routing demonstrates end-to-end on
+    # user-uploaded data — not just on the synthetic /demo/stream mix.
+    # Honest framing: "for demo purposes, BGL/Thunderbird/HDFS sources
+    # can produce critical anomalies."
+    "bgl", "bgl-2k", "bgl-500",
+    "thunderbird", "thunderbird-2k", "thunderbird-500",
+    "hdfs", "hdfs-200", "hdfs-100k",
+    "apache", "apache-1000",
+    "openstack", "openstack-abnormal",
 })
 
 CRITICAL_SOURCES_ENV = "LOGGUARD_CRITICAL_SOURCES"
