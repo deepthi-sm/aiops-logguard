@@ -19,7 +19,9 @@ import httpx
 
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
 DEFAULT_MODEL = "llama3:8b"
-DEFAULT_TIMEOUT_S = 60.0
+# 5 min default: LLaMA 3 8B on CPU takes 60–180 s per call (longer cold).
+# Override via `LOGGUARD_LLAMA_TIMEOUT_S` if running on a fast box.
+DEFAULT_TIMEOUT_S = 300.0
 
 log = logging.getLogger(__name__)
 
@@ -44,7 +46,7 @@ class OllamaClient:
         *,
         base_url: str | None = None,
         model: str | None = None,
-        timeout_s: float = DEFAULT_TIMEOUT_S,
+        timeout_s: float | None = None,
     ) -> None:
         self._base_url = (
             base_url
@@ -53,6 +55,9 @@ class OllamaClient:
         self._model = (
             model or os.environ.get("LOGGUARD_LLAMA_MODEL", DEFAULT_MODEL)
         )
+        if timeout_s is None:
+            env_timeout = os.environ.get("LOGGUARD_LLAMA_TIMEOUT_S")
+            timeout_s = float(env_timeout) if env_timeout else DEFAULT_TIMEOUT_S
         self._client = httpx.AsyncClient(timeout=timeout_s)
 
     @property

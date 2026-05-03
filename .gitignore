@@ -32,6 +32,11 @@ backend/artifacts/faiss.index
 backend/artifacts/embeddings_*.npy
 backend/artifacts/drain3_state.bin
 
+# Proper-eval orchestrator output dirs (binaries only — RESULTS_*.md
+# are written separately to backend/training/ and ARE tracked).
+backend/artifacts_proper/
+backend/artifacts_proper_*/
+
 # Datasets (huge — pull from LogHub instead)
 backend/training/data/
 
@@ -45,5 +50,36 @@ backend/.env
 # Docker
 *.pid
 
-# Claude Code (personal/agent-local settings)
-.claude/settings.local.json
+# Claude Code (personal/agent-local settings + worktrees)
+.claude/
+
+# AI session handoff doc — local notes, not part of the project history
+SESSION_HANDOFF.md
+
+# Throwaway diagnostic scripts (ad-hoc debug tools, not committed
+# alongside _diagnose_eval.py which IS tracked).
+backend/training/_investigate_*.py
+backend/training/_rebuild_*.py
+backend/training/_verify_*.py
+
+# Smoke-test artifact dir (large binaries from --smoke runs)
+backend/artifacts_smoke/
+
+# Stray runtime artifacts that occasionally land in artifacts/ but are
+# rebuilt by the pipeline — don't commit them.
+backend/artifacts/autoencoder_metrics.json
+backend/artifacts/transformer_metrics.json
+backend/artifacts/thresholds.json
+backend/artifacts/incidents.jsonl
+backend/artifacts/windows_openstack.jsonl
+backend/artifacts/drain3_state_apache_eval.bin
+
+# Empty stub files that show up if `npm` or `git` is run without args
+# in the frontend dir and stdout is redirected. Always 0 bytes — junk.
+frontend/cd
+frontend/git
+frontend/npm
+frontend/loguard-frontend@0.1.0
+
+# Stray root package-lock.json (real one lives in frontend/)
+/package-lock.json

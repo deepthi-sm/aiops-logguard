@@ -398,6 +398,7 @@ def train_one_model(
     device: str = "cpu",
     sample_mode: bool = False,
     epochs_override: int | None = None,
+    rebuild: bool = False,
 ) -> None:
     """Run transformer + AE + scoring + calibration end-to-end on the
     given (train+val) data. Writes every artifact under `output_dir`.
@@ -422,12 +423,16 @@ def train_one_model(
         )
 
     # 1. Transformer (writes transformer.pt + transformer_metrics.json).
+    #    `rebuild=False` lets the underlying step_* helpers skip when a
+    #    fresh artifact already exists on disk — important for resume
+    #    after a kill, so we don't redo the 30-45 min training step
+    #    when transformer.pt is already there.
     _step_train_transformer(
         train_embeddings.astype(np.float32),
         train_labels.astype(np.float32),
         artifact_dir=output_dir,
         device=device,
-        rebuild=True,
+        rebuild=rebuild,
         sample_mode=sample_mode,
         epochs_override=epochs_override,
     )
@@ -440,7 +445,7 @@ def train_one_model(
         train_labels.astype(np.float32),
         artifact_dir=output_dir,
         device=device,
-        rebuild=True,
+        rebuild=rebuild,
         sample_mode=sample_mode,
         epochs_override=epochs_override,
     )
@@ -451,7 +456,7 @@ def train_one_model(
         train_embeddings.astype(np.float32),
         artifact_dir=output_dir,
         device=device,
-        rebuild=True,
+        rebuild=rebuild,
     )
 
     # 4. Calibrate (writes thresholds.json + confidence_scorer.pt).
@@ -559,12 +564,16 @@ def eval_apache(
     truth = cross_label_windows(windows)
 
     # Embed Apache via SBERT — cached separately from training to avoid
-    # contamination of the train embeddings file.
+    # contamination of the train embeddings file. `resume=True` is
+    # always-on here: Apache embedding is an evaluation step, not a
+    # source of truth, so it's always safe to pick up a partial cache
+    # rather than restarting from scratch on every interrupted run.
     apache_emb_cache = drain3_eval_state.parent / "embeddings_apache.npy"
     from sentence_transformers import SentenceTransformer
     sbert = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
     embeddings = embed_or_load(
         windows, model=sbert, cache_path=apache_emb_cache,  # type: ignore[arg-type]
+        resume=True,
     )
 
     detector = Detector.from_artifacts(artifact_dir)
@@ -992,6 +1001,7 @@ def main(argv: list[str] | None = None) -> int:
         drain3_state_src=output_dir / "_inputs" / "openstack" / "drain3_state.bin",
         device=args.device,
         epochs_override=epochs_override,
+        rebuild=args.rebuild,
     )
     if args.smoke:
         _smoke_check(t0, "phase 2")
@@ -1125,6 +1135,7 @@ def _phase3_combined(
         drain3_state_src=combined_drain3,
         device=args.device,
         epochs_override=epochs_override,
+        rebuild=args.rebuild,
     )
 
 

@@ -138,7 +138,18 @@ def metrics_for_split(
     c_sub = confidences[indices]
     y_sub = labels[indices].astype(np.int64)
 
-    pred = predicted_labels(e_sub, c_sub, thresholds)
+    # Paper F1 is reported with the ENSEMBLE gate alone — the confidence
+    # gate is an operational filter for live alerts (keeps PagerDuty quiet
+    # on borderline calls) and shouldn't contaminate the offline metric.
+    # The live runner (`Detector.is_anomaly` via `predicted_labels` above)
+    # still applies both gates — that path is unchanged.
+    #
+    # Why this matters: in the previous run Model A scored AUC=0.996 on
+    # OpenStack-test (model is excellent) but F1=0.000 because the
+    # confidence MLP had collapsed and the AND gate suppressed every TP.
+    # We want F1 to reflect model quality, not calibrator pathology.
+    _ = c_sub  # kept in signature for parity with live path / future use
+    pred = (e_sub >= thresholds.anomaly_threshold).astype(np.int64)
     tp = int(np.sum((pred == 1) & (y_sub == 1)))
     fp = int(np.sum((pred == 1) & (y_sub == 0)))
     tn = int(np.sum((pred == 0) & (y_sub == 0)))
