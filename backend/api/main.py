@@ -25,6 +25,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.db import DB_URL_ENV, close_pool, create_pool
+from api.demo_stream import router as demo_stream_router
 from api.migrations import apply_schema
 from api.repository import install_jsonb_codec
 from api.routes import router as rest_router
@@ -130,6 +131,7 @@ app.add_middleware(
 
 app.include_router(rest_router)
 app.include_router(upload_router)
+app.include_router(demo_stream_router)
 app.include_router(ws_router)
 
 
