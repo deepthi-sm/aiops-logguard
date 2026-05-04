@@ -53,7 +53,10 @@ export function AnomalyFeedRow({ anomaly }: { anomaly: Anomaly }) {
           severityClassName(anomaly.severity),
         )}
       >
-        {formatScore(anomaly.ensemble_score)}
+        {/* digits=2 — see AnomalyTable for the same reason. The
+            saturated tail (>0.99) collapses to "100%" with the
+            default 0 decimals; two decimals shows the true variation. */}
+        {formatScore(anomaly.ensemble_score, 2)}
       </div>
     </Link>
   );
