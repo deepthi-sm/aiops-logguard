@@ -82,7 +82,12 @@ export function useExplanation(
     queryKey: ["explanation", id],
     queryFn: () => getExplanation(id!),
     enabled: !!id,
-    refetchInterval: status === "pending" ? 2_000 : false,
+    // 500ms (was 2000) — paired with the API-side explanation cache
+    // (see backend/api/routes.py::_try_api_cache_hit). The cache lookup
+    // resolves a pending GET in <200ms; the next poll picks up the
+    // ready Explanation half a second later, making click→display feel
+    // instantaneous during the demo.
+    refetchInterval: status === "pending" ? 500 : false,
     retry: false,
   });
 }

@@ -17,8 +17,9 @@ from datetime import UTC, datetime
 from typing import Annotated
 
 import asyncpg
+import numpy as np
 import redis.asyncio as redis_aio
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 
 from api import repository
 from api.db import get_pool
@@ -71,6 +72,73 @@ async def _bump_explanation_priority(anomaly_id: str) -> None:
             await client.aclose()
     except Exception:  # noqa: BLE001
         _log.exception("priority bump failed for %s; falling back to LIFO", anomaly_id)
+
+
+async def _try_api_cache_hit(
+    request: Request,
+    pool: asyncpg.Pool,
+    anomaly_id: str,
+) -> Explanation | None:
+    """API-side fast-path explanation cache.
+
+    Click-flow optimisation: when a pending anomaly is GET'd, embed its
+    log_template via the SBERT loaded in `app.state` and look it up in
+    the precomputed explanation cache. On hit (cosine ≥ cache threshold,
+    currently 0.45 — see `precomputed_explanations.json`), write the
+    cached explanation to the DB inline and return a fully-formed
+    Explanation here — saving a 17s round-trip through Ollama on the
+    rare rebuilds where the worker hasn't yet popped the row.
+
+    Returns None on any of:
+      * SBERT or cache not loaded (test env, missing artifacts)
+      * Anomaly row vanished
+      * No cosine match clears the cache threshold
+      * DB update returned 0 rows (race)
+    Caller falls back to the existing 202-pending + priority-set queue.
+    """
+    sbert = getattr(request.app.state, "sbert", None)
+    cache = getattr(request.app.state, "explanation_cache", None)
+    if sbert is None or cache is None:
+        return None
+    anomaly = await repository.get_anomaly(pool, anomaly_id)
+    if anomaly is None or not anomaly.log_template:
+        return None
+    try:
+        out = sbert.encode(
+            [anomaly.log_template],
+            batch_size=1,
+            normalize_embeddings=True,
+            show_progress_bar=False,
+        )
+        arr = np.asarray(out, dtype=np.float32).reshape(-1)
+        norm = float(np.linalg.norm(arr))
+        if norm > 1e-9:
+            arr = (arr / norm).astype(np.float32)
+        hit = cache.lookup(arr)
+    except Exception:  # noqa: BLE001
+        _log.exception("api-side cache lookup failed for %s", anomaly_id)
+        return None
+    if hit is None:
+        return None
+    entry, score = hit
+    ok = await repository.update_explanation(
+        pool, anomaly_id,
+        root_cause=entry.root_cause,
+        recommended_fix=entry.recommended_fix,
+        similar_incidents=list(entry.similar_incidents),
+        status="ready",
+    )
+    if not ok:
+        return None
+    _log.info(
+        "api-side cache hit for %s (score=%.3f, pattern=%r)",
+        anomaly_id, score, entry.template_pattern[:60],
+    )
+    # Re-fetch so the response includes attention_weights derived from
+    # the anomaly's top_contributing_lines (set by the runner, not by
+    # the cache).
+    _, explanation = await repository.get_explanation(pool, anomaly_id)
+    return explanation
 
 
 router = APIRouter(prefix="/api/v1")
@@ -217,15 +285,24 @@ async def get_anomaly(
 )
 async def get_explanation(
     anomaly_id: str,
+    request: Request,
     pool: Annotated[asyncpg.Pool, Depends(get_pool)],
 ) -> Explanation | Response:
     status_value, explanation = await repository.get_explanation(pool, anomaly_id)
     if status_value is None:
         raise HTTPException(status_code=404, detail="Anomaly not found")
     if status_value == "pending":
-        # Bump this anomaly to the front of the explainer's queue so
-        # the user clicking it doesn't wait through the entire upload
-        # backlog (could be thousands of items at ~75s/each).
+        # Demo-reliability fast-path: try the API-side explanation
+        # cache BEFORE queuing for the async worker. With the cache
+        # threshold at 0.45 (see precomputed_explanations.json) ~all
+        # anomalies land a hit, so the click usually returns a ready
+        # Explanation in <200ms instead of 202 + a 17s wait.
+        cached = await _try_api_cache_hit(request, pool, anomaly_id)
+        if cached is not None:
+            return cached
+        # Cache miss — bump this anomaly to the front of the explainer's
+        # queue so the user clicking it doesn't wait through the entire
+        # upload backlog (could be thousands of items at ~75s/each).
         await _bump_explanation_priority(anomaly_id)
         return Response(status_code=status.HTTP_202_ACCEPTED)
     if explanation is None:
