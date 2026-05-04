@@ -89,6 +89,17 @@ def build_user_prompt(
             lines.append(f"  Reference {i}: source={r.source}")
             lines.append(f"    Template: {r.template}")
             lines.append(f"    Failure mode: {r.root_cause}")
+    else:
+        # Explicit empty-context note. With no FAISS hits we used to
+        # leave the prompt with no context block at all, which a few
+        # times let small models drift into rambling or skip the
+        # required format. The single-line directive anchors the model
+        # back to the alert facts and the three-section template.
+        lines.append("")
+        lines.append(
+            "No background context is available for this alert. "
+            "Reason from the alert facts above alone."
+        )
 
     lines.extend([
         "",

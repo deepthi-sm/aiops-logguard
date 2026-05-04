@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { useExplanation } from "../api/queries";
 import type { ExplanationStatus } from "../types";
 import { EyebrowLabel } from "./EyebrowLabel";
@@ -45,8 +46,17 @@ export function ExplanationCard({
       </div>
 
       <div className="rounded-lg border-[0.5px] border-border-subtle bg-card p-5">
-        {status === "pending" && <PendingState />}
-        {status === "failed" && <FailedState />}
+        {/* The polling endpoint returns 500 when the worker has marked
+            this anomaly explanation_status='failed'. That can happen
+            while our parent's `status` prop still says "pending"
+            (anomaly query hasn't refetched yet), so we treat a 500
+            from useExplanation as the failed state right away rather
+            than leaving the spinner running on an explanation we
+            already know failed. */}
+        {status === "pending" && !error && <PendingState />}
+        {(status === "failed" || (status === "pending" && error)) && (
+          <FailedState error={error} />
+        )}
         {status === "ready" && isLoading && !data && (
           <div className="space-y-2">
             <Skeleton className="h-3 bg-hover" />
@@ -65,27 +75,92 @@ export function ExplanationCard({
 
 // -- Sub-states ------------------------------------------------------------
 
+/**
+ * "LLaMA is analysing this anomaly…" with a live elapsed counter.
+ *
+ * Why a counter: a flat skeleton looks identical at 5 s and 5 min, so
+ * any explanation slow enough to notice "looks broken." Showing
+ * elapsed time tells the viewer the system is working and gives them
+ * a reasonable way to decide when something has gone wrong.
+ *
+ * The clock starts on mount, so it reflects "time you've been waiting
+ * on this page" rather than "time since the worker queued the job."
+ * For the demo that's the more relevant number.
+ */
 function PendingState() {
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    const start = Date.now();
+    const id = window.setInterval(() => {
+      setElapsed(Math.floor((Date.now() - start) / 1000));
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  const elapsedStr =
+    elapsed < 60
+      ? `${elapsed}s`
+      : `${Math.floor(elapsed / 60)}m ${(elapsed % 60).toString().padStart(2, "0")}s`;
+
   return (
     <div>
       <div className="mb-3 flex items-center gap-2 text-[12px] text-tertiary">
         <Spinner />
-        LLaMA is analysing this anomaly…
+        <span>
+          LLaMA is analysing this anomaly…{" "}
+          <span className="font-mono tabular-nums text-secondary">({elapsedStr})</span>
+        </span>
       </div>
       <div className="space-y-2">
         <Skeleton className="h-3 bg-hover" />
         <Skeleton className="h-3 w-[85%] bg-hover" />
         <Skeleton className="h-3 w-[60%] bg-hover" />
       </div>
+      {elapsed >= 60 && elapsed < 300 && (
+        <div className="mt-3 text-[11px] text-tertiary">
+          Generation can take a couple of minutes on CPU. The pipeline
+          times out after 15 minutes, after which this card will switch
+          to an error state.
+        </div>
+      )}
+      {elapsed >= 300 && (
+        <div className="mt-3 text-[11px] text-warning">
+          This is taking longer than expected. The model may be cold
+          or under load. The pipeline will mark this as failed at
+          15 minutes if it doesn't finish.
+        </div>
+      )}
     </div>
   );
 }
 
-function FailedState() {
+/**
+ * Failed state — surfaces when the worker has set
+ * `explanation_status='failed'` (LLaMA timeout / connection failure /
+ * malformed response). When the user clicks again the API will queue
+ * a fresh attempt, but we don't auto-retry to avoid stampeding a
+ * model that's already struggling.
+ */
+function FailedState({ error }: { error?: Error | null }) {
+  // Surface the API's `detail` message when present — useful for
+  // operators reading the page during a demo to tell timeout vs. a
+  // genuine generation error apart.
+  const detail = error?.message?.trim();
   return (
     <div className="text-[13px] text-critical">
-      Explanation failed to generate. The model may be down or rate-limited
-      — see <span className="font-mono">/api/v1/system/drift</span> for status.
+      <div>
+        Explanation generation failed. The model timed out or returned
+        an error before producing a postmortem.
+      </div>
+      {detail && detail !== "Explanation generation failed" && (
+        <div className="mt-2 font-mono text-[11px] text-tertiary">{detail}</div>
+      )}
+      <div className="mt-2 text-[11px] text-tertiary">
+        Click another anomaly, or refresh this page to queue a fresh
+        attempt. Check the <span className="font-mono">LogGuard RAG</span>{" "}
+        worker logs for the failed call (search for{" "}
+        <span className="font-mono">rid={"{anomaly_id}"}</span>).
+      </div>
     </div>
   );
 }

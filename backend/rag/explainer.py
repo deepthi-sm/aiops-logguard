@@ -29,6 +29,7 @@ import json
 import logging
 import os
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -361,8 +362,42 @@ class RagExplainer:
             similar=retrieved,
         )
 
-        # 4. call LLaMA
-        raw = await self._llama.generate(system=SYSTEM_PROMPT, user=user_prompt)
+        # 4. call LLaMA — wrapped in `asyncio.wait_for` as a hard
+        # belt-and-suspenders bound on top of the httpx timeout.
+        # Without this guard, a half-open socket or a wedged Ollama
+        # process would block the worker indefinitely (we have a single
+        # worker; one stuck call freezes every queued anomaly behind
+        # it). The outer ceiling is the client timeout + 30 s grace,
+        # so under healthy operation httpx fires first and we get a
+        # clean error path; the asyncio cap only triggers when httpx
+        # itself fails to honour its own timeout.
+        client_timeout = float(getattr(self._llama, "timeout_s", 900.0))
+        worker_timeout = client_timeout + 30.0
+        prompt_chars = len(SYSTEM_PROMPT) + len(user_prompt)
+        log.info(
+            "explainer: start anomaly=%s prompt_chars=%d k=%d worker_timeout_s=%.0f",
+            anomaly_id, prompt_chars, len(retrieved), worker_timeout,
+        )
+        t0 = time.monotonic()
+        try:
+            raw = await asyncio.wait_for(
+                self._llama.generate(
+                    system=SYSTEM_PROMPT,
+                    user=user_prompt,
+                    request_id=anomaly_id,
+                ),
+                timeout=worker_timeout,
+            )
+        except asyncio.TimeoutError:
+            elapsed = time.monotonic() - t0
+            log.error(
+                "explainer: WORKER TIMEOUT anomaly=%s elapsed_s=%.1f "
+                "limit_s=%.0f — marking failed so the queue can drain",
+                anomaly_id, elapsed, worker_timeout,
+            )
+            await self._mark_failed(anomaly_id)
+            self.stats.failed += 1
+            return
 
         # 5. parse response
         parsed = parse_response(raw)
@@ -382,10 +417,12 @@ class RagExplainer:
             self.stats.not_found += 1
             return
 
+        elapsed = time.monotonic() - t0
         self.stats.explained += 1
         log.info(
-            "explainer: %s ready (live LLaMA, k=%d, model=%s)",
-            anomaly_id, len(retrieved),
+            "explainer: ready anomaly=%s elapsed_s=%.1f response_chars=%d "
+            "k=%d model=%s",
+            anomaly_id, elapsed, len(raw), len(retrieved),
             getattr(self._llama, "model", "<unknown>"),
         )
 

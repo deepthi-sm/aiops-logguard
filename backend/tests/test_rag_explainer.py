@@ -62,7 +62,9 @@ class _StubLlama:
             "2. Stubbed step two."
         )
 
-    async def generate(self, *, system: str, user: str) -> str:
+    async def generate(
+        self, *, system: str, user: str, request_id: str | None = None,
+    ) -> str:
         self.calls.append((system, user))
         return self._response
 
@@ -74,7 +76,9 @@ class _RaisingLlama:
     """For the failure-path test."""
     model = "broken"
 
-    async def generate(self, *, system: str, user: str) -> str:
+    async def generate(
+        self, *, system: str, user: str, request_id: str | None = None,
+    ) -> str:
         raise RuntimeError("Ollama is offline")
 
     async def aclose(self) -> None:
