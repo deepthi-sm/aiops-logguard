@@ -28,7 +28,7 @@ export function ExplanationCard({
   anomalyId: string;
   status: ExplanationStatus;
 }) {
-  const { data, isLoading, error } = useExplanation(anomalyId, status);
+  const { data, error } = useExplanation(anomalyId, status);
   const incidentCount = data?.similar_incidents.length ?? 0;
 
   return (
@@ -46,28 +46,25 @@ export function ExplanationCard({
       </div>
 
       <div className="rounded-lg border-[0.5px] border-border-subtle bg-card p-5">
-        {/* The polling endpoint returns 500 when the worker has marked
-            this anomaly explanation_status='failed'. That can happen
-            while our parent's `status` prop still says "pending"
-            (anomaly query hasn't refetched yet), so we treat a 500
-            from useExplanation as the failed state right away rather
-            than leaving the spinner running on an explanation we
-            already know failed. */}
-        {status === "pending" && !error && <PendingState />}
-        {(status === "failed" || (status === "pending" && error)) && (
+        {/* Rendering is data-driven, not status-prop-driven.
+            useAnomaly polls every 2 s while the explanation is
+            pending so its `status` prop catches up, but useExplanation
+            polls every 500 ms and will have the Explanation in hand
+            up to ~2 s earlier. We render based on what we actually
+            have so the user sees the explanation the instant it
+            arrives, without waiting for the parent anomaly query to
+            tick. The status prop is a hint about which "empty"
+            placeholder to show, never about whether to render
+            ReadyContent. */}
+        {data ? (
+          <ReadyContent data={data} />
+        ) : error ? (
           <FailedState error={error} />
+        ) : status === "failed" ? (
+          <FailedState error={null} />
+        ) : (
+          <PendingState />
         )}
-        {status === "ready" && isLoading && !data && (
-          <div className="space-y-2">
-            <Skeleton className="h-3 bg-hover" />
-            <Skeleton className="h-3 w-[85%] bg-hover" />
-            <Skeleton className="h-3 w-[70%] bg-hover" />
-          </div>
-        )}
-        {status === "ready" && error && (
-          <div className="text-[13px] text-critical">{(error as Error).message}</div>
-        )}
-        {status === "ready" && data && <ReadyContent data={data} />}
       </div>
     </section>
   );

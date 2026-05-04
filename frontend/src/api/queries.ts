@@ -71,6 +71,18 @@ export function useAnomaly(id: string | undefined) {
     queryKey: ["anomaly", id],
     queryFn: () => getAnomaly(id!),
     enabled: !!id,
+    // Poll the anomaly itself while its explanation is being
+    // generated, so the parent component sees `explanation_status`
+    // flip from "pending" → "ready" / "failed" without the user
+    // having to reload the page. Without this, the AnomalyDetail
+    // page would load the row once with status="pending" and never
+    // re-fetch, leaving the rendered status frozen even though
+    // useExplanation has already pulled the finished explanation
+    // from the API. 2 s cadence matches the dashboard list.
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      return data?.explanation_status === "pending" ? 2_000 : false;
+    },
   });
 }
 
@@ -82,12 +94,17 @@ export function useExplanation(
     queryKey: ["explanation", id],
     queryFn: () => getExplanation(id!),
     enabled: !!id,
-    // 500ms (was 2000) — paired with the API-side explanation cache
-    // (see backend/api/routes.py::_try_api_cache_hit). The cache lookup
-    // resolves a pending GET in <200ms; the next poll picks up the
-    // ready Explanation half a second later, making click→display feel
-    // instantaneous during the demo.
-    refetchInterval: status === "pending" ? 500 : false,
+    // 500 ms while the parent says pending AND we don't yet have a
+    // generated explanation. The moment the API returns 200 with
+    // data we stop polling — there is no point re-fetching the same
+    // payload every half-second until useAnomaly's next tick refreshes
+    // the parent's status prop. (Without the early stop, polling
+    // continued indefinitely, which is why "load only after refresh"
+    // looked like the page was stuck.)
+    refetchInterval: (query) => {
+      if (query.state.data) return false;
+      return status === "pending" ? 500 : false;
+    },
     retry: false,
   });
 }
