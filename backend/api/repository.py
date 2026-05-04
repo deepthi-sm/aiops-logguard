@@ -486,22 +486,53 @@ async def metrics_timeline(
 # -- drift ------------------------------------------------------------------
 
 
+_DRIFT_HIGH_THRESHOLD = 0.40
+_DRIFT_CRITICAL_THRESHOLD = 0.55
+
+
+def _band_drift_status(psi: float) -> str:
+    """Threshold banding for the synthetic-proxy drift score.
+
+    psi <  0.40           → healthy
+    0.40 <= psi <  0.55   → drift_high
+    psi >= 0.55           → drift_critical
+
+    These thresholds were chosen so typical operation on the trained
+    domains (OpenStack, BGL through the OS-trained model) sits well
+    inside "healthy" — std-dev of confidences for those datasets is
+    ~0.20-0.30 — while a genuinely-shifted distribution (e.g. all-INFO
+    replay or a corrupted upload that produces uniformly low-confidence
+    rows) pushes std-dev above 0.40 and starts flipping the badge.
+    """
+    if psi >= _DRIFT_CRITICAL_THRESHOLD:
+        return "drift_critical"
+    if psi >= _DRIFT_HIGH_THRESHOLD:
+        return "drift_high"
+    return "healthy"
+
+
 async def drift_status(pool: asyncpg.Pool) -> DriftStatus:
     """Most recent drift event + last retrain.
 
     When there's no drift_events row recorded (fresh DB / no drift
-    detected yet), we surface a synthetic baseline PSI computed from
-    the confidence distribution of recent anomalies. This avoids the
-    dashboard showing a constant `0.00` healthy score, which reads as
-    "drift detection isn't running" rather than the truth: "no drift
-    detected, but the system is sampling and computing live".
+    detected yet), we surface a synthetic baseline computed from the
+    confidence distribution of recent anomalies. The synthetic score
+    is the std-dev of the last 200 anomaly confidences. True PSI
+    requires a paired reference distribution; this proxy tracks the
+    same underlying signal (input variability) without needing the
+    reference set baked in.
 
-    The synthetic score is the std-dev of the last 200 anomaly
-    confidences, capped at the healthy/drift_high boundary (0.10).
-    True PSI requires a paired reference distribution; this proxy
-    tracks the same underlying signal (input variability) without
-    needing the reference set baked in. When a real drift_events row
-    is inserted by a future periodic detector, that takes precedence.
+    The previous version of this function clamped the synthetic value
+    at 0.099 so the status would always read "healthy", which made the
+    UI display 0.10 for every dataset regardless of actual variability.
+    The clamp is now gone: the synthetic score is reported honestly,
+    banded into healthy / drift_high / drift_critical via the same
+    thresholds used for real drift events. The response carries
+    `is_synthetic=True` so the frontend can label the number as a
+    proxy.
+
+    When a real drift_events row is inserted by a future periodic
+    detector, that takes precedence and `is_synthetic=False`.
     """
     async with pool.acquire() as conn:
         drift_row = await conn.fetchrow(
@@ -524,14 +555,16 @@ async def drift_status(pool: asyncpg.Pool) -> DriftStatus:
             )
 
     if drift_row is None:
-        # Cap at 0.099 so the status stays "healthy" — anything above
-        # that boundary should come from a real drift_events insert.
-        psi = min(0.099, max(0.0, float(baseline or 0.0)))
+        # Synthetic path: clip only to the schema's [0, 1] range, no
+        # artificial "stay healthy" cap. Status is derived from the
+        # same banding the real path uses.
+        psi = min(1.0, max(0.0, float(baseline or 0.0)))
         return DriftStatus(
             drift_score=psi,
             last_retrain=last_retrain,
-            status="healthy",
+            status=_band_drift_status(psi),
             psi_score=psi,
+            is_synthetic=True,
         )
     psi = float(drift_row["psi_score"])
     severity = drift_row["severity"]  # 'drift_high' | 'drift_critical'
@@ -540,4 +573,5 @@ async def drift_status(pool: asyncpg.Pool) -> DriftStatus:
         last_retrain=last_retrain,
         status=severity,
         psi_score=psi,
+        is_synthetic=False,
     )

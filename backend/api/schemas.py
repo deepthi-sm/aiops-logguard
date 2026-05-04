@@ -132,6 +132,12 @@ class DriftStatus(BaseModel):
     last_retrain: IsoUtcDatetime | None = None
     status: DriftLevel
     psi_score: float = Field(ge=0.0)
+    # Additive optional flag (default False): True when the score is a
+    # synthetic proxy (std-dev of recent confidences) rather than a
+    # real PSI from a `drift_events` row. Lets the frontend render a
+    # "synthetic indicator" subtext without breaking older clients
+    # that don't read this field.
+    is_synthetic: bool = False
 
 
 # ---------- Feedback ----------

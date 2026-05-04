@@ -94,6 +94,10 @@ export interface DriftStatus {
   last_retrain: string | null;
   status: DriftLevel;
   psi_score: number;
+  // Optional, default false on older API responses. True when the
+  // score is a synthetic proxy (std-dev of recent confidences) rather
+  // than a real PSI from a `drift_events` row.
+  is_synthetic?: boolean;
 }
 
 export interface FeedbackRequest {
