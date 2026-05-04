@@ -128,6 +128,28 @@ export interface FeedbackHistoryResponse {
   false_positive: number;
 }
 
+// -- Training runs --------------------------------------------------------
+
+export type TrainingRunStatus = "active" | "completed" | "failed";
+
+export interface TrainingRun {
+  id: number;
+  started_at: string;        // ISO 8601 UTC
+  completed_at: string | null;
+  dataset: string;
+  f1_score: number | null;
+  precision_score: number | null;
+  recall_score: number | null;
+  artifacts_path: string | null;
+  notes: string;
+  status: TrainingRunStatus;
+}
+
+export interface TrainingRunsResponse {
+  items: TrainingRun[];
+  active_id: number | null;
+}
+
 // -- Upload ---------------------------------------------------------------
 
 export type UploadStatus = "queued" | "running" | "completed" | "failed";

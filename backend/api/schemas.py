@@ -177,6 +177,38 @@ class FeedbackHistoryResponse(BaseModel):
     false_positive: int = Field(ge=0)
 
 
+# ---------- Training runs (GET /api/v1/training/runs) ----------
+
+TrainingRunStatus = Literal["active", "completed", "failed"]
+
+
+class TrainingRun(BaseModel):
+    """One row of `training_runs`. Mirrors the table 1:1 plus a derived
+    `status` field — "active" for the most-recently-completed run with
+    a usable F1 (the model currently loaded into the live detector),
+    "failed" for runs that didn't reach F1 >= 0.5, "completed" for
+    older successful runs.
+    """
+    id: int
+    started_at: IsoUtcDatetime
+    completed_at: IsoUtcDatetime | None = None
+    dataset: str
+    f1_score: float | None = None
+    precision_score: float | None = None
+    recall_score: float | None = None
+    artifacts_path: str | None = None
+    notes: str = ""
+    status: TrainingRunStatus
+
+
+class TrainingRunsResponse(BaseModel):
+    """GET /api/v1/training/runs. Newest first. `active_id` is the id
+    of the run currently loaded in the detector — usually the most
+    recently completed successful run."""
+    items: list[TrainingRun]
+    active_id: int | None = None
+
+
 # ---------- Upload (POST /api/v1/upload) ----------
 
 UploadStatus = Literal["queued", "running", "completed", "failed"]

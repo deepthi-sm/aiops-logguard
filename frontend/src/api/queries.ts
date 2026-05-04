@@ -27,6 +27,7 @@ import {
   getUploadStatus,
   listAnomalies,
   listFeedback,
+  listTrainingRuns,
   postFeedback,
   uploadLogFile,
   type ListAnomaliesParams,
@@ -44,6 +45,7 @@ import type {
   MetricsSummary,
   TimelineResponse,
   TimelineWindow,
+  TrainingRunsResponse,
   UploadJobResponse,
   UploadStatusResponse,
 } from "../types";
@@ -164,6 +166,17 @@ export function useFeedbackHistory(limit = 100) {
     queryKey: ["feedback-history", limit],
     queryFn: () => listFeedback(limit),
     refetchInterval: 30_000,
+  });
+}
+
+export function useTrainingRuns(limit = 50) {
+  return useQuery<TrainingRunsResponse, Error>({
+    queryKey: ["training-runs", limit],
+    queryFn: () => listTrainingRuns(limit),
+    // Training runs are immutable once written — refresh once a minute
+    // is plenty (covers the case where a CI run drops a new row while
+    // the user has the page open).
+    refetchInterval: 60_000,
   });
 }
 

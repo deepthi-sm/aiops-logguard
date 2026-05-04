@@ -24,6 +24,7 @@ import type {
   Severity,
   TimelineResponse,
   TimelineWindow,
+  TrainingRunsResponse,
   UploadJobResponse,
   UploadStatusResponse,
 } from "../types";
@@ -225,6 +226,21 @@ export async function getTimeline(
 }
 
 // -- system ---------------------------------------------------------------
+
+export async function listTrainingRuns(
+  limit = 50,
+): Promise<TrainingRunsResponse> {
+  if (USE_MOCK) {
+    // No mock fixture — return an empty list; the page renders its
+    // empty-state instead.
+    return mockDelay({ items: [], active_id: null });
+  }
+  const { data } = await fetchJson<TrainingRunsResponse>(
+    `/training/runs?limit=${encodeURIComponent(limit)}`,
+  );
+  return data!;
+}
+
 
 export async function getDrift(): Promise<DriftStatus> {
   if (USE_MOCK) return mockDelay(MOCK_DRIFT);

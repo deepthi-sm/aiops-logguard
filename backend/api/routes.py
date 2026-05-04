@@ -35,6 +35,7 @@ from api.schemas import (
     Severity,
     TimelineResponse,
     TimelineWindow,
+    TrainingRunsResponse,
 )
 
 _log = logging.getLogger(__name__)
@@ -292,3 +293,19 @@ async def system_drift(
     pool: Annotated[asyncpg.Pool, Depends(get_pool)],
 ) -> DriftStatus:
     return await repository.drift_status(pool)
+
+
+# ---------- /training ----------
+
+@router.get("/training/runs", response_model=TrainingRunsResponse)
+async def training_runs(
+    pool: Annotated[asyncpg.Pool, Depends(get_pool)],
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> TrainingRunsResponse:
+    """List historical training runs from the `training_runs` Postgres
+    table, newest first. The /admin/training page consumes this; tests
+    + CI populate the table; the API's `_seed_training_runs()` lifespan
+    hook populates an initial pair on first boot.
+    """
+    items, active_id = await repository.list_training_runs(pool, limit=limit)
+    return TrainingRunsResponse(items=items, active_id=active_id)

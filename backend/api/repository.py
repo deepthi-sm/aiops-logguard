@@ -30,6 +30,7 @@ from api.schemas import (
     TimelineBucket,
     TimelineResponse,
     TimelineWindow,
+    TrainingRun,
 )
 
 # -- JSONB codec ------------------------------------------------------------
@@ -487,6 +488,77 @@ async def metrics_timeline(
         for r in rows
     ]
     return TimelineResponse(window=window, buckets=buckets)
+
+
+# -- training runs ----------------------------------------------------------
+
+
+_TRAINING_RUN_F1_FLOOR = 0.5  # below this is treated as a failed run
+
+
+async def list_training_runs(
+    pool: asyncpg.Pool,
+    *,
+    limit: int = 50,
+) -> tuple[list[TrainingRun], int | None]:
+    """Return (items, active_id) for the training_runs table.
+
+    Sort key: completed_at DESC NULLS LAST, then started_at DESC, so
+    runs that are still in flight (completed_at IS NULL) sit at the
+    bottom rather than getting promoted past completed runs by their
+    started_at.
+
+    Status derivation, server-side so the frontend doesn't have to
+    re-do it on every render:
+      - failed:    f1_score is NULL or < 0.5
+      - active:    the most recently completed run with f1 >= 0.5
+      - completed: any other successful run
+
+    `active_id` mirrors the row whose status came back "active", or
+    None when no run qualifies (e.g. fresh DB before seed).
+    """
+    sql = (
+        "SELECT id, started_at, completed_at, dataset, f1_score, "
+        "       precision_score, recall_score, artifacts_path, notes "
+        "FROM training_runs "
+        "ORDER BY completed_at DESC NULLS LAST, started_at DESC "
+        "LIMIT $1"
+    )
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(sql, limit)
+
+    # Find the id of the active run — the most recently completed
+    # row with f1 >= the floor. Iterate in the already-sorted order.
+    active_id: int | None = None
+    for r in rows:
+        f1 = r["f1_score"]
+        if r["completed_at"] is not None and f1 is not None and float(f1) >= _TRAINING_RUN_F1_FLOOR:
+            active_id = int(r["id"])
+            break
+
+    items: list[TrainingRun] = []
+    for r in rows:
+        rid = int(r["id"])
+        f1 = r["f1_score"]
+        if f1 is None or float(f1) < _TRAINING_RUN_F1_FLOOR:
+            status = "failed"
+        elif rid == active_id:
+            status = "active"
+        else:
+            status = "completed"
+        items.append(TrainingRun(
+            id=rid,
+            started_at=r["started_at"],
+            completed_at=r["completed_at"],
+            dataset=r["dataset"],
+            f1_score=float(f1) if f1 is not None else None,
+            precision_score=float(r["precision_score"]) if r["precision_score"] is not None else None,
+            recall_score=float(r["recall_score"]) if r["recall_score"] is not None else None,
+            artifacts_path=r["artifacts_path"],
+            notes=r["notes"] or "",
+            status=status,  # type: ignore[arg-type]
+        ))
+    return items, active_id
 
 
 # -- drift ------------------------------------------------------------------
