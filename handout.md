@@ -232,52 +232,53 @@ Concrete output:
 
 ---
 
-## Phase 2C.3 — System page (pending, awaiting Training verification)
+## Phase 2C.3 — System page (shipped)
 
-Three sub-tasks lined up:
+Three sub-tasks delivered:
 
 ### a. New backend endpoints
 
-- `GET /api/v1/system/services` — per-service health probes for the
-  five services in the existing hardcoded list (FastAPI, RAG worker,
-  Redis, Ollama, Postgres). Probe strategy:
-  - FastAPI: trivially "online" (the API serving this request is
-    proof) — return `online`, version, uptime.
-  - Redis: `await redis.ping()` — online if returns True; unreachable
-    on exception.
-  - Postgres: `await pool.fetchval("SELECT 1")` — online on success.
-  - Ollama: `await llama.ping()` (existing helper) — online if
-    `/api/tags` returns 200.
-  - RAG worker: indirect — check the priority-queue Redis SET for
-    recent activity, OR add a heartbeat key the worker writes every
-    N seconds. Lean toward the latter (simpler, more honest), to be
-    confirmed.
-- `GET /api/v1/system/queue` — pending / ready / failed counts via a
-  single `GROUP BY explanation_status` query, plus the oldest pending
-  row's id and age.
+- `GET /api/v1/system/services` — `asyncio.gather` over four parallel
+  probes:
+  - FastAPI: trivially `online`, returns uptime in seconds since
+    module import.
+  - Postgres: `pool.fetchval("SELECT 1")` — `online` on success,
+    `offline` on any exception.
+  - Redis: `redis.ping()` via the same `LOGGUARD_REDIS_URL` other
+    code paths use — `online` / `degraded` / `offline`.
+  - Ollama: reuses `OllamaClient.ping()` (the same wrapper the RAG
+    worker uses) — meaningful because a passing probe here proves
+    the exact code path the explainer would use also works.
+  RAG worker is intentionally omitted — it's a daemon with no
+  inbound port, so probing is unreliable. Health is inferred from
+  the queue panel below.
+- `GET /api/v1/system/queue` — `pending` / `ready` / `failed` counts
+  via a single `GROUP BY explanation_status` plus the oldest pending
+  row's id and `detected_at`.
 
-### b. Active Models live wiring (per follow-up screenshot)
+### b. Active Models live wiring — chose option (a)
 
-Current `/admin/system` shows three hardcoded model rows
-(Transformer / AutoEncoder / Confidence MLP) with per-model F1 / P / R.
-The `training_runs` table only stores **ensemble** metrics. Two paths
-to actually live-wire those numbers — needs explicit approval before
-implementing:
-
-- **(a)** Show the active run's ensemble F1/P/R for all three model
-  rows (same value across rows). Honest about what we store. No
-  schema change.
-- **(b)** Add `model_metrics JSONB` (or per-model F1 columns) to
-  `training_runs`. Schema migration. Needs approval.
-
-Recommendation: ship (a) immediately, document (b) as a follow-up.
-Will propose with thresholds before applying.
+`training_runs` stores ensemble-level F1/P/R only; per-model
+breakdown is not in the schema. Two options were considered:
+**(a)** show the active run's ensemble metrics on each of the three
+model rows with an explicit caveat banner; **(b)** schema-migrate
+`training_runs` to add per-model columns. Shipped (a) — honest about
+the storage limitation, no schema migration, banner reads "Per-model
+breakdown not stored — the values below are the ensemble metrics
+from the active run (`<dataset>`)". (b) deferred as a follow-up that
+would also require updating the training pipeline to write per-model
+metrics; no need today.
 
 ### c. Page rewire
 
-Replace the hardcoded `SERVICES` and `MODELS` consts with `useQuery`
-hooks against the new endpoints, plus the queue-depth snippet. Drift
-section already lives — keep it. No layout overhaul (just wiring).
+Replaced the hardcoded `SERVICES` const with `useSystemServices()`;
+added a new `Pending explanation queue` section between Services and
+Active Models driven by `useSystemQueue()` (5 s refetch); kept the
+existing drift section unchanged. Active Models is now driven by
+`useTrainingRuns(50).items.find(r => r.id === active_id)` and the
+caveat banner. The same "saturated" framing from the Training page
+applies: any score ≥ 0.999 renders in `text-secondary` (neutral) rather
+than the green success colour, with 3-decimal precision throughout.
 
 ---
 
@@ -294,8 +295,8 @@ section already lives — keep it. No layout overhaul (just wiring).
 | `GET /api/v1/metrics/timeline` | unchanged | — |
 | `GET /api/v1/system/drift` | extended | `DriftStatus.is_synthetic: bool = False` (additive optional). Score no longer capped at 0.099. |
 | `GET /api/v1/training/runs` | **new** | List runs, derived status |
-| `GET /api/v1/system/services` | **planned** | Phase 2C.3 |
-| `GET /api/v1/system/queue` | **planned** | Phase 2C.3 |
+| `GET /api/v1/system/services` | **new** | Phase 2C.3 — parallel probes (FastAPI / Postgres / Redis / Ollama) |
+| `GET /api/v1/system/queue` | **new** | Phase 2C.3 — pending/ready/failed counts + oldest pending |
 
 Every change is additive. No breaking change for older API consumers.
 
@@ -309,7 +310,9 @@ Every change is additive. No breaking change for older API consumers.
 06e4373  ui: drop synthetic-indicator subtext + last-retrain sentence on System
 1d189b0  feat: Incidents page wired to real true-positive feedback
 5b98b3c  feat: Training page wired to live training_runs table
-(next)   feat: redesign Training page — compact current-model card, dense run history, maintenance demoted
+fa9af69  docs: add handout.md tracking Phase 1 audit + Phase 2 fixes
+f208ddb  feat: redesign Training page (compact current-model, dense history, demoted retrain)
+ee35369  fix: visible severity pills + honest "saturated" framing on metrics
 (next)   feat: System page services + queue + Active Models live (Phase 2C.3)
 ```
 

@@ -23,6 +23,8 @@ import {
   getExplanation,
   getHealth,
   getMetricsSummary,
+  getSystemQueue,
+  getSystemServices,
   getTimeline,
   getUploadStatus,
   listAnomalies,
@@ -43,6 +45,8 @@ import type {
   FeedbackResponse,
   HealthResponse,
   MetricsSummary,
+  SystemQueueResponse,
+  SystemServicesResponse,
   TimelineResponse,
   TimelineWindow,
   TrainingRunsResponse,
@@ -166,6 +170,28 @@ export function useFeedbackHistory(limit = 100) {
     queryKey: ["feedback-history", limit],
     queryFn: () => listFeedback(limit),
     refetchInterval: 30_000,
+  });
+}
+
+export function useSystemServices() {
+  return useQuery<SystemServicesResponse, Error>({
+    queryKey: ["system-services"],
+    queryFn: getSystemServices,
+    // 10 s — service-state changes (Postgres up/down, Ollama
+    // unreachable) need a faster cadence than the 30 s health endpoint
+    // we also poll, but not so fast we DDOS the probes.
+    refetchInterval: 10_000,
+  });
+}
+
+export function useSystemQueue() {
+  return useQuery<SystemQueueResponse, Error>({
+    queryKey: ["system-queue"],
+    queryFn: getSystemQueue,
+    // 5 s — queue depth changes second-by-second during a /connect or
+    // /upload run; this cadence is fast enough to look live without
+    // hammering the DB.
+    refetchInterval: 5_000,
   });
 }
 

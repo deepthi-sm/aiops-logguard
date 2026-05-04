@@ -128,6 +128,28 @@ export interface FeedbackHistoryResponse {
   false_positive: number;
 }
 
+// -- System services + queue ---------------------------------------------
+
+export type ServiceStatus = "online" | "degraded" | "offline";
+
+export interface SystemService {
+  name: string;
+  status: ServiceStatus;
+  detail: string;
+}
+
+export interface SystemServicesResponse {
+  items: SystemService[];
+}
+
+export interface SystemQueueResponse {
+  pending: number;
+  ready: number;
+  failed: number;
+  oldest_pending_id: string | null;
+  oldest_pending_at: string | null;
+}
+
 // -- Training runs --------------------------------------------------------
 
 export type TrainingRunStatus = "active" | "completed" | "failed";

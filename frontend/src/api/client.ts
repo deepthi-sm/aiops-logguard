@@ -24,6 +24,8 @@ import type {
   Severity,
   TimelineResponse,
   TimelineWindow,
+  SystemQueueResponse,
+  SystemServicesResponse,
   TrainingRunsResponse,
   UploadJobResponse,
   UploadStatusResponse,
@@ -238,6 +240,28 @@ export async function listTrainingRuns(
   const { data } = await fetchJson<TrainingRunsResponse>(
     `/training/runs?limit=${encodeURIComponent(limit)}`,
   );
+  return data!;
+}
+
+
+export async function getSystemServices(): Promise<SystemServicesResponse> {
+  if (USE_MOCK) return mockDelay({ items: [] });
+  const { data } = await fetchJson<SystemServicesResponse>(`/system/services`);
+  return data!;
+}
+
+
+export async function getSystemQueue(): Promise<SystemQueueResponse> {
+  if (USE_MOCK) {
+    return mockDelay({
+      pending: 0,
+      ready: 0,
+      failed: 0,
+      oldest_pending_id: null,
+      oldest_pending_at: null,
+    });
+  }
+  const { data } = await fetchJson<SystemQueueResponse>(`/system/queue`);
   return data!;
 }
 

@@ -27,6 +27,7 @@ from api.schemas import (
     MetricsSummary,
     Severity,
     SimilarIncident,
+    SystemQueueResponse,
     TimelineBucket,
     TimelineResponse,
     TimelineWindow,
@@ -488,6 +489,42 @@ async def metrics_timeline(
         for r in rows
     ]
     return TimelineResponse(window=window, buckets=buckets)
+
+
+# -- system queue snapshot --------------------------------------------------
+
+
+async def system_queue_snapshot(pool: asyncpg.Pool) -> SystemQueueResponse:
+    """Snapshot of the pending-explanation queue.
+
+    Two queries: counts grouped by `explanation_status`, plus the
+    oldest pending row's id and detection timestamp (so the System
+    page can render "oldest pending: anom_… — N min ago").
+
+    Cheap to call every couple of seconds — both queries are
+    indexed-friendly (status filter + ORDER BY detected_at LIMIT 1).
+    """
+    counts_sql = (
+        "SELECT explanation_status AS status, COUNT(*) AS n "
+        "FROM anomalies GROUP BY explanation_status"
+    )
+    oldest_sql = (
+        "SELECT id, detected_at FROM anomalies "
+        "WHERE explanation_status = 'pending' "
+        "ORDER BY detected_at ASC LIMIT 1"
+    )
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(counts_sql)
+        oldest = await conn.fetchrow(oldest_sql)
+
+    counts = {r["status"]: int(r["n"]) for r in rows}
+    return SystemQueueResponse(
+        pending=counts.get("pending", 0),
+        ready=counts.get("ready", 0),
+        failed=counts.get("failed", 0),
+        oldest_pending_id=oldest["id"] if oldest else None,
+        oldest_pending_at=oldest["detected_at"] if oldest else None,
+    )
 
 
 # -- training runs ----------------------------------------------------------

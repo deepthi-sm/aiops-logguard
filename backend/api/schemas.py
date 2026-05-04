@@ -177,6 +177,35 @@ class FeedbackHistoryResponse(BaseModel):
     false_positive: int = Field(ge=0)
 
 
+# ---------- System services + queue (GET /api/v1/system/services etc.) ----
+
+ServiceStatus = Literal["online", "degraded", "offline"]
+
+
+class SystemService(BaseModel):
+    """One row in the System page's services grid. `status` is the
+    live probe outcome; `detail` is a short human-readable line shown
+    under the name."""
+    name: str
+    status: ServiceStatus
+    detail: str
+
+
+class SystemServicesResponse(BaseModel):
+    items: list[SystemService]
+
+
+class SystemQueueResponse(BaseModel):
+    """Snapshot of the pending-explanation queue. Lets the System page
+    show "is the RAG worker keeping up?" without instrumenting the
+    worker itself."""
+    pending: int = Field(ge=0)
+    ready: int = Field(ge=0)
+    failed: int = Field(ge=0)
+    oldest_pending_id: str | None = None
+    oldest_pending_at: IsoUtcDatetime | None = None
+
+
 # ---------- Training runs (GET /api/v1/training/runs) ----------
 
 TrainingRunStatus = Literal["active", "completed", "failed"]

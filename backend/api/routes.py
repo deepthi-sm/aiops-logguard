@@ -8,11 +8,13 @@ from Step 2 — only the data source is different. Tests seed the DB with
 the same fixtures Step 2 served from `mock_data`, so existing assertions
 still hold.
 """
+import asyncio
 import base64
 import binascii
 import json
 import logging
 import os
+import time
 from datetime import UTC, datetime
 from typing import Annotated
 
@@ -33,6 +35,9 @@ from api.schemas import (
     FeedbackResponse,
     MetricsSummary,
     Severity,
+    SystemQueueResponse,
+    SystemService,
+    SystemServicesResponse,
     TimelineResponse,
     TimelineWindow,
     TrainingRunsResponse,
@@ -293,6 +298,145 @@ async def system_drift(
     pool: Annotated[asyncpg.Pool, Depends(get_pool)],
 ) -> DriftStatus:
     return await repository.drift_status(pool)
+
+
+# Hostnames the services-probe uses. Resolved at request time (not
+# at module import) so test environments can override the env var
+# between requests.
+def _redis_url() -> str:
+    return os.environ.get("LOGGUARD_REDIS_URL", "redis://localhost:6379")
+
+
+def _ollama_url() -> str:
+    return os.environ.get("LOGGUARD_LLAMA_HOST", "http://localhost:11434")
+
+
+async def _probe_postgres(pool: asyncpg.Pool) -> SystemService:
+    """Postgres health: SELECT 1 on a pooled connection.
+
+    "online" if the query succeeds, "offline" otherwise. We don't
+    have a "degraded" tier for Postgres in the demo (no slow-query /
+    replication-lag instrumentation)."""
+    try:
+        async with pool.acquire() as conn:
+            await conn.fetchval("SELECT 1")
+        return SystemService(
+            name="Postgres",
+            status="online",
+            detail="postgres:5432 · SELECT 1 OK",
+        )
+    except Exception as e:  # noqa: BLE001
+        return SystemService(
+            name="Postgres",
+            status="offline",
+            detail=f"connect failed: {type(e).__name__}",
+        )
+
+
+async def _probe_redis() -> SystemService:
+    url = _redis_url()
+    client = redis_aio.from_url(url, decode_responses=True)
+    try:
+        ok = await client.ping()
+        return SystemService(
+            name="Redis streams",
+            status="online" if ok else "degraded",
+            detail=f"{url} · PING OK" if ok else f"{url} · ping returned False",
+        )
+    except Exception as e:  # noqa: BLE001
+        return SystemService(
+            name="Redis streams",
+            status="offline",
+            detail=f"connect failed: {type(e).__name__}",
+        )
+    finally:
+        try:
+            await client.aclose()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+async def _probe_ollama() -> SystemService:
+    """Ollama health: GET /api/tags via the existing OllamaClient.ping().
+
+    Reuses the same client wrapper the RAG worker uses, so a positive
+    probe here is meaningful — it's the exact same code path the
+    explainer would use to call the model."""
+    # Local import keeps `routes` from pulling rag/ at module scope.
+    from rag.llama_client import OllamaClient
+    client = OllamaClient()
+    try:
+        ok = await client.ping()
+        model = client.model
+        host = client.base_url
+        return SystemService(
+            name="Ollama / LLaMA",
+            status="online" if ok else "offline",
+            detail=(
+                f"{host} · model: {model} · /api/tags OK"
+                if ok else f"{host} · /api/tags failed"
+            ),
+        )
+    except Exception as e:  # noqa: BLE001
+        return SystemService(
+            name="Ollama / LLaMA",
+            status="offline",
+            detail=f"connect failed: {type(e).__name__}",
+        )
+    finally:
+        try:
+            await client.aclose()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+# Module-level uptime anchor — set on import. Approximates the API's
+# wall-clock uptime since boot (good enough for the System page; not
+# meant to survive worker restarts in a multi-process deployment).
+_STARTED_AT = time.monotonic()
+
+
+@router.get("/system/services", response_model=SystemServicesResponse)
+async def system_services(
+    pool: Annotated[asyncpg.Pool, Depends(get_pool)],
+) -> SystemServicesResponse:
+    """Live health probes for the four backend services the System
+    page surfaces. Probes run in parallel via asyncio.gather so a slow
+    Ollama doesn't bottleneck the rest of the response.
+
+    FastAPI itself is included as a trivially-online row — the fact
+    that this handler responded is proof. Useful as a place to surface
+    uptime so operators can confirm "the API I'm looking at is the
+    one I redeployed".
+
+    The RAG worker is intentionally omitted from this response — it's
+    a daemon with no inbound port, so we can't probe it directly.
+    Use the /system/queue endpoint to infer worker health from queue
+    drain rate.
+    """
+    started_uptime_s = int(time.monotonic() - _STARTED_AT)
+    api_row = SystemService(
+        name="FastAPI backend",
+        status="online",
+        detail=f"localhost:8000 · uptime {started_uptime_s}s",
+    )
+    pg_row, redis_row, ollama_row = await asyncio.gather(
+        _probe_postgres(pool),
+        _probe_redis(),
+        _probe_ollama(),
+    )
+    return SystemServicesResponse(items=[api_row, pg_row, redis_row, ollama_row])
+
+
+@router.get("/system/queue", response_model=SystemQueueResponse)
+async def system_queue(
+    pool: Annotated[asyncpg.Pool, Depends(get_pool)],
+) -> SystemQueueResponse:
+    """Snapshot of the explanation queue: counts by status, plus the
+    oldest pending row id and timestamp. The /admin/system page polls
+    this so an operator can see at a glance whether the RAG worker is
+    keeping up."""
+    return await repository.system_queue_snapshot(pool)
 
 
 # ---------- /training ----------
