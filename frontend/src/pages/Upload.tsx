@@ -186,9 +186,9 @@ export function Upload() {
           Upload logs
         </h1>
         <p className="mt-2 max-w-[640px] text-[13px] text-secondary">
-          Push a `.log` or `.txt` file into the live ingestion pipeline.
-          Anomalies derived from your file appear in the dashboard tagged{" "}
-          <code className="font-mono text-primary">origin=user-upload</code>.
+          Push a .log or .txt file into the live ingestion pipeline.
+          Anomalies derived from your file appear in the dashboard,
+          filtered to just this upload.
         </p>
       </header>
 
