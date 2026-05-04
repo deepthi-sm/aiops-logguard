@@ -7,10 +7,6 @@ import { ErrorState } from "../components/ErrorState";
 import { Skeleton } from "../components/Skeleton";
 import { cn } from "../lib/cn";
 import { formatRelativeTime } from "../lib/format";
-import {
-  severityBgClassName,
-  severityClassName,
-} from "../lib/severity";
 import type { FeedbackHistoryItem } from "../types";
 
 /**
@@ -219,11 +215,19 @@ function IncidentRow({ item }: { item: FeedbackHistoryItem }) {
     >
       <div className="flex items-baseline justify-between gap-4">
         <div className="flex items-center gap-3">
+          {/* Faint-bg + bordered pill — the solid bg-critical helper
+              made the text invisible because text-critical is the
+              same coral. Use the faint /10 pattern that the rest of
+              the dashboard uses for severity pills. */}
           <span
             className={cn(
-              "rounded-md px-1.5 py-0.5 text-[10px] uppercase tracking-wider",
-              severityBgClassName(item.severity),
-              severityClassName(item.severity),
+              "rounded-md border-[0.5px] px-1.5 py-0.5 text-[10px] uppercase tracking-wider",
+              item.severity === "critical" &&
+                "border-critical/40 bg-critical/10 text-critical",
+              item.severity === "warning" &&
+                "border-warning/40 bg-warning/10 text-warning",
+              item.severity === "info" &&
+                "border-info/40 bg-info/10 text-info",
             )}
           >
             {item.severity}

@@ -158,8 +158,24 @@ function formatScore3(value: number | null): string {
   return value === null ? "—" : value.toFixed(3);
 }
 
+/** A score >= this value is treated as "saturated" — at the ceiling
+ * of what the metric can express. Saturated values are rendered in a
+ * neutral colour with an explicit "saturated" tag rather than the
+ * green success colour, which would read as celebratory and look
+ * suspicious for three identical 1.000s. The threshold is just below
+ * 1.0 because real-type DB columns can store 1.0 exactly when the
+ * underlying calculation rounded that way. */
+const SATURATED_THRESHOLD = 0.999;
+
+function isSaturated(value: number | null): boolean {
+  return value !== null && value >= SATURATED_THRESHOLD;
+}
+
 function scoreClass(value: number | null): string {
   if (value === null) return "text-tertiary";
+  // Saturated values get a neutral colour, not green. The tile-level
+  // "saturated" tag carries the framing; the colour stays calm.
+  if (value >= SATURATED_THRESHOLD) return "text-secondary";
   if (value >= 0.9) return "text-success";
   if (value >= 0.5) return "text-warning";
   return "text-critical";
@@ -245,6 +261,20 @@ function CurrentModelSection({ run }: { run: TrainingRun | null }) {
           </div>
         )}
 
+        {/* When every metric pegs the ceiling, surface that directly
+            instead of letting the reader squint at three suspicious
+            "1.000"s. Honest framing beats per-tile-tags-only when
+            the whole row is saturated. */}
+        {isSaturated(run.f1_score) &&
+          isSaturated(run.precision_score) &&
+          isSaturated(run.recall_score) && (
+            <div className="mt-1.5 text-[11px] text-tertiary">
+              All three metrics at ceiling on this run — typical of
+              in-distribution evaluation. Cross-domain performance
+              varies; see drift on the System page.
+            </div>
+          )}
+
         {/* Closed-by-default expander for the developer-y stuff */}
         {(parsed.details || run.artifacts_path) && (
           <details className="group mt-5 border-t-[0.5px] border-border-subtle pt-4">
@@ -300,14 +330,26 @@ function MetricTile({
   label: string;
   value: number | null;
 }) {
+  const saturated = isSaturated(value);
   return (
     <div className="rounded-md border-[0.5px] border-border-subtle bg-page px-3 py-2.5">
-      <div className="text-[10px] uppercase tracking-wider text-tertiary">
-        {label}
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-[10px] uppercase tracking-wider text-tertiary">
+          {label}
+        </span>
+        {/* Honest framing: when a metric pegs the ceiling, label it
+            "saturated" right next to the number. Three identical 1.000s
+            without context read as a fake; with the tag they read as a
+            deliberately-acknowledged in-distribution result. */}
+        {saturated && (
+          <span className="text-[9px] uppercase tracking-[0.05em] text-tertiary opacity-80">
+            saturated
+          </span>
+        )}
       </div>
       <div
         className={cn(
-          "mt-1 font-mono text-[18px] tabular-nums",
+          "mt-1 font-mono text-[15px] tabular-nums",
           scoreClass(value),
         )}
       >
