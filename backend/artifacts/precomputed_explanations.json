@@ -1,8 +1,8 @@
 {
-  "version": 5,
+  "version": 6,
   "model": "llama3.2:1b",
   "embedding_dim": 384,
-  "match_threshold": 0.45,
+  "match_threshold": 0.3,
   "entries": [
     {
       "template_pattern": "FATAL {host} ciod: Error reading message prefix from {ip}: Connection timed out",

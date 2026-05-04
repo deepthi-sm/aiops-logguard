@@ -18,9 +18,14 @@ from typing import Protocol
 import httpx
 
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
+# Default to llama3:8b — the GPU deployment target. For CPU testing
+# override with `LOGGUARD_LLAMA_MODEL=llama3.2:1b` (faster but weaker).
+# Override `LOGGUARD_LLAMA_HOST` to point at a remote GPU-hosted
+# Ollama instance, e.g. `http://gpu-box.local:11434`.
 DEFAULT_MODEL = "llama3:8b"
 # 5 min default: LLaMA 3 8B on CPU takes 60–180 s per call (longer cold).
-# Override via `LOGGUARD_LLAMA_TIMEOUT_S` if running on a fast box.
+# On a GPU it's ~3-5 s. Override via `LOGGUARD_LLAMA_TIMEOUT_S` if
+# you're running CPU-only and want a tighter ceiling.
 DEFAULT_TIMEOUT_S = 300.0
 
 log = logging.getLogger(__name__)
@@ -85,20 +90,18 @@ class OllamaClient:
             # 8B doesn't cold-start every time the worker fires.
             "keep_alive": "5m",
             "options": {
-                # Determinism knobs — for the demo we want consistent
-                # output across reruns. Low temperature; the spec ranks
-                # consistency over creativity for SRE incident summaries.
+                # Determinism knobs — for SRE postmortem output we want
+                # consistent, technical phrasing across reruns. Low
+                # temperature; the spec ranks consistency over creativity
+                # for incident summaries.
                 "temperature": 0.2,
-                # Cap response length. Without this, the model will
-                # generate ~400-600 tokens for a typical incident
-                # (~60-90s on CPU even on llama3.2:1b). 100 tokens is
-                # enough for a 2-3 sentence root-cause + a numbered
-                # 3-step fix list, and brings per-call latency down
-                # to ~15-18s — meaningful for the rare cache-miss
-                # path. The fast path is the precomputed cache (sub-
-                # second), so we optimise this for "best fallback we
-                # can get" rather than "always fast".
-                "num_predict": 100,
+                # Cap response length to fit the three-section
+                # ROOT CAUSE / IMPACT / RECOMMENDED FIX format the
+                # prompt enforces. ~200 tokens (~150 words) is enough
+                # for a 4-6 sentence postmortem with a numbered fix
+                # list. On GPU (llama3:8b) this is ~3-5 s; on CPU
+                # ~30-90 s depending on model.
+                "num_predict": 200,
             },
         }
         log.debug("ollama: POST %s model=%s", url, self._model)

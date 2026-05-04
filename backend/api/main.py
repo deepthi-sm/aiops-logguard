@@ -32,8 +32,6 @@ from api.routes import router as rest_router
 from api.schemas import HealthResponse
 from api.upload import router as upload_router
 from api.ws import router as ws_router
-from ml.embedder import load_default_sbert
-from rag.explainer import DEFAULT_CACHE_PATH, ExplanationCache
 
 VERSION = os.environ.get("LOGGUARD_VERSION", "0.1.0")
 _started_at = time.monotonic()
@@ -110,42 +108,11 @@ async def lifespan(app: FastAPI):
             DB_URL_ENV,
         )
     app.state.pool = pool
-
-    # Demo-reliability fast-path: load SBERT + the precomputed
-    # explanation cache here so the click-path `GET /explanation`
-    # handler can do a cache lookup BEFORE queuing for the async
-    # LLaMA worker. Cache hit → write to DB inline, return Explanation
-    # immediately (~50ms). Cache miss → fall through to the existing
-    # priority-set + 202-pending flow.
-    #
-    # Loading SBERT here adds ~3-5s to API boot. Worth it: every cached
-    # click drops from "up to 17s on a worker pop" to "<200ms inline".
-    # If SBERT or the cache can't load (missing artifacts in test env),
-    # we leave both as None — `routes.get_explanation` checks for None
-    # and gracefully falls back to the worker path.
-    app.state.sbert = None
-    app.state.explanation_cache = None
-    try:
-        _log.info("loading SBERT for API-side cache lookup ...")
-        app.state.sbert = load_default_sbert()
-        _log.info("loading precomputed explanation cache ...")
-        app.state.explanation_cache = ExplanationCache.load(DEFAULT_CACHE_PATH)
-        if app.state.explanation_cache is not None:
-            _log.info(
-                "explanation cache ready: %d entries, threshold=%.2f",
-                app.state.explanation_cache.size,
-                app.state.explanation_cache.match_threshold,
-            )
-    except Exception:  # noqa: BLE001
-        _log.exception("SBERT/cache load failed — click path will use worker fallback")
-
     try:
         yield
     finally:
         await close_pool(pool)
         app.state.pool = None
-        app.state.sbert = None
-        app.state.explanation_cache = None
 
 
 app = FastAPI(

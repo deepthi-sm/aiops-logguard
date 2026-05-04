@@ -177,6 +177,26 @@ class ExplanationCache:
             return self._entries[best_idx], best_score
         return None
 
+    def best_match(self, query_emb: np.ndarray) -> tuple[_CacheEntry, float] | None:
+        """Closest entry regardless of threshold. Demo-grade safety net:
+        even if `lookup()` rejects the match, the click path can still
+        return a "loosely related" cached explanation rather than fall
+        through to a multi-second LLaMA queue.
+
+        Use sparingly — under healthy operation `lookup()` should hit;
+        falling through to this method means SBERT cosine to every
+        cached template was below threshold, which is a useful signal
+        the cache may need new templates.
+
+        Returns None only when the cache is empty.
+        """
+        if not self._entries:
+            return None
+        q = query_emb.reshape(-1).astype(np.float32)
+        scores = self._matrix @ q
+        best_idx = int(np.argmax(scores))
+        return self._entries[best_idx], float(scores[best_idx])
+
 
 # -- the worker ------------------------------------------------------------
 
@@ -327,34 +347,8 @@ class RagExplainer:
             self.stats.not_found += 1
             return
 
-        # 1. embed the anomaly's log template (used for both cache
-        #    lookup AND FAISS retrieval — single SBERT call either way).
+        # 1. embed the anomaly's log template for FAISS retrieval.
         query_vec = self._embed_template(anomaly.log_template)
-
-        # 1a. Fast-path: cache hit?
-        if self._cache is not None:
-            hit = self._cache.lookup(query_vec.reshape(-1))
-            if hit is not None:
-                entry, score = hit
-                ok = await repository.update_explanation(
-                    self._pool, anomaly_id,
-                    root_cause=entry.root_cause,
-                    recommended_fix=entry.recommended_fix,
-                    similar_incidents=list(entry.similar_incidents),
-                    status="ready",
-                )
-                if not ok:
-                    log.warning("explainer: cache-hit update returned 0 rows for %s", anomaly_id)
-                    self.stats.not_found += 1
-                    return
-                self.stats.cache_hits += 1
-                self.stats.explained += 1
-                log.info(
-                    "explainer: %s ready (cache hit, score=%.3f, pattern=%r)",
-                    anomaly_id, score, entry.template_pattern[:60],
-                )
-                return
-            self.stats.cache_misses += 1
 
         # 2. retrieve top-K similar prior incidents from FAISS
         retrieved = self._faiss.query(query_vec, k=self._top_k)
@@ -494,14 +488,22 @@ async def build_default_explainer(
     index_path: str | Path | None = None,
     records_path: str | Path | None = None,
     top_k: int = LIVE_TOP_K,
-    cache_path: str | Path | None = None,
 ) -> tuple[RagExplainer, ExplainerResources]:
     """Wire up the production explainer from env vars / defaults.
 
     Returns the explainer + a resources bag the caller closes on
     shutdown. Failure to connect to any of (Redis, Postgres, FAISS,
     Ollama) raises here so the process exits early — better than
-    silently consuming messages that we can't process."""
+    silently consuming messages that we can't process.
+
+    Every anomaly is explained via a live Ollama call — no precomputed
+    cache short-circuit. Latency is bounded by the model + hardware:
+      * llama3.2:1b on CPU  → ~15-30 s per call
+      * llama3:8b   on CPU  → ~60-180 s per call
+      * llama3:8b   on GPU  → ~3-5 s per call
+    Set `LOGGUARD_LLAMA_HOST` to point at a remote GPU-hosted Ollama
+    when running off a laptop CPU.
+    """
     redis_url = redis_url or os.environ.get(
         "LOGGUARD_REDIS_URL", "redis://localhost:6379"
     )
@@ -535,9 +537,6 @@ async def build_default_explainer(
             llama.base_url,
         )
 
-    cache_p = Path(cache_path) if cache_path is not None else DEFAULT_CACHE_PATH
-    cache = ExplanationCache.load(cache_p)
-
     explainer = RagExplainer(
         pool=pool,
         subscriber=subscriber,
@@ -545,7 +544,7 @@ async def build_default_explainer(
         faiss=faiss,
         llama=llama,
         top_k=top_k,
-        cache=cache,
+        cache=None,  # cache disabled — every anomaly hits live LLaMA
     )
     resources = ExplainerResources(pool=pool, subscriber=subscriber, llama=llama)
     return explainer, resources
