@@ -102,18 +102,9 @@ function DriftSection({
                   {driftLabel(drift.status)}
                 </span>
               </div>
-              {drift.is_synthetic && (
-                <div className="mt-2 text-[11px] text-tertiary">
-                  Synthetic indicator — no live drift events configured.
-                </div>
-              )}
               <p className="mt-3 max-w-md text-[12px] leading-relaxed text-tertiary">
                 Population Stability Index between training and live
-                embeddings. Last retrain{" "}
-                {drift.last_retrain
-                  ? new Date(drift.last_retrain).toLocaleDateString()
-                  : "—"}{" "}
-                on the OpenStack dataset.
+                embeddings.
               </p>
             </div>
             <div className="md:w-1/2 md:max-w-[320px]">
