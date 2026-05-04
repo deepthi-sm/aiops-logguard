@@ -341,7 +341,8 @@ async def list_feedback(
     that has feedback").
     """
     sql = (
-        "SELECT id, severity, source, log_template, detected_at, feedback "
+        "SELECT id, severity, source, log_template, detected_at, feedback, "
+        "       root_cause "
         "FROM anomalies "
         "WHERE feedback IS NOT NULL "
         "ORDER BY detected_at DESC "
@@ -365,6 +366,11 @@ async def list_feedback(
             "source": r["source"],
             "log_template": r["log_template"] or "",
             "severity": r["severity"],
+            # Empty string when the explainer hasn't yet produced one
+            # (still pending / failed) — the frontend's Incidents page
+            # uses this to render the postmortem snippet next to the
+            # anomaly id, falling back to the template when blank.
+            "root_cause": r["root_cause"] or "",
         }
         for r in rows
     ]

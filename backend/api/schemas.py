@@ -161,6 +161,12 @@ class FeedbackHistoryItem(BaseModel):
     source: str
     log_template: str
     severity: Severity
+    # Postmortem snippet from the RAG worker. Empty string when the
+    # explainer hasn't run yet for this anomaly (status != "ready");
+    # the Incidents page falls back to log_template when blank.
+    # Additive optional field with default "" so older API consumers
+    # that don't read it stay compatible.
+    root_cause: str = ""
 
 
 class FeedbackHistoryResponse(BaseModel):

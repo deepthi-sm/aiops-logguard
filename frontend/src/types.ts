@@ -115,6 +115,10 @@ export interface FeedbackHistoryItem {
   source: string;
   log_template: string;
   severity: Severity;
+  // Postmortem snippet from the RAG worker. Empty string when the
+  // explainer hasn't run yet (still pending / failed). The Incidents
+  // page falls back to log_template when blank.
+  root_cause?: string;
 }
 
 export interface FeedbackHistoryResponse {
