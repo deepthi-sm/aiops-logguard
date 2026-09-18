@@ -85,9 +85,9 @@ interface NavItem {
 const USER_ITEMS: NavItem[] = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/anomalies", label: "Anomalies", icon: AlignLeft },
+  { to: "/feedback", label: "Feedback", icon: MessageSquare },
   { to: "/upload", label: "Upload", icon: Upload },
   { to: "/connect", label: "Connect", icon: Link2 },
-  { to: "/feedback", label: "Feedback", icon: MessageSquare },
   { to: "/settings", label: "Settings", icon: SettingsIcon },
 ];
 

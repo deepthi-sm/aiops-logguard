@@ -27,9 +27,11 @@ from api.schemas import (
     MetricsSummary,
     Severity,
     SimilarIncident,
+    SystemQueueResponse,
     TimelineBucket,
     TimelineResponse,
     TimelineWindow,
+    TrainingRun,
 )
 
 # -- JSONB codec ------------------------------------------------------------
@@ -78,6 +80,10 @@ def hydrate_anomaly(row: asyncpg.Record) -> Anomaly:
     are JSONB columns — codec normally converts them to Python objects;
     `_coerce_jsonb` is a defensive fallback for rows that bypassed the
     codec when they were written.
+
+    Real model scores are surfaced verbatim — no display caps or
+    normalisation. The teacher's evaluation expects to see the actual
+    `ensemble_score` and `failure_probability` from the trained models.
     """
     raw_contrib = _coerce_jsonb(row["top_contributing_lines"]) or []
     contributing = [
@@ -337,7 +343,8 @@ async def list_feedback(
     that has feedback").
     """
     sql = (
-        "SELECT id, severity, source, log_template, detected_at, feedback "
+        "SELECT id, severity, source, log_template, detected_at, feedback, "
+        "       root_cause "
         "FROM anomalies "
         "WHERE feedback IS NOT NULL "
         "ORDER BY detected_at DESC "
@@ -361,6 +368,11 @@ async def list_feedback(
             "source": r["source"],
             "log_template": r["log_template"] or "",
             "severity": r["severity"],
+            # Empty string when the explainer hasn't yet produced one
+            # (still pending / failed) — the frontend's Incidents page
+            # uses this to render the postmortem snippet next to the
+            # anomaly id, falling back to the template when blank.
+            "root_cause": r["root_cause"] or "",
         }
         for r in rows
     ]
@@ -479,25 +491,163 @@ async def metrics_timeline(
     return TimelineResponse(window=window, buckets=buckets)
 
 
+# -- system queue snapshot --------------------------------------------------
+
+
+async def system_queue_snapshot(pool: asyncpg.Pool) -> SystemQueueResponse:
+    """Snapshot of the pending-explanation queue.
+
+    Two queries: counts grouped by `explanation_status`, plus the
+    oldest pending row's id and detection timestamp (so the System
+    page can render "oldest pending: anom_… — N min ago").
+
+    Cheap to call every couple of seconds — both queries are
+    indexed-friendly (status filter + ORDER BY detected_at LIMIT 1).
+    """
+    counts_sql = (
+        "SELECT explanation_status AS status, COUNT(*) AS n "
+        "FROM anomalies GROUP BY explanation_status"
+    )
+    oldest_sql = (
+        "SELECT id, detected_at FROM anomalies "
+        "WHERE explanation_status = 'pending' "
+        "ORDER BY detected_at ASC LIMIT 1"
+    )
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(counts_sql)
+        oldest = await conn.fetchrow(oldest_sql)
+
+    counts = {r["status"]: int(r["n"]) for r in rows}
+    return SystemQueueResponse(
+        pending=counts.get("pending", 0),
+        ready=counts.get("ready", 0),
+        failed=counts.get("failed", 0),
+        oldest_pending_id=oldest["id"] if oldest else None,
+        oldest_pending_at=oldest["detected_at"] if oldest else None,
+    )
+
+
+# -- training runs ----------------------------------------------------------
+
+
+_TRAINING_RUN_F1_FLOOR = 0.5  # below this is treated as a failed run
+
+
+async def list_training_runs(
+    pool: asyncpg.Pool,
+    *,
+    limit: int = 50,
+) -> tuple[list[TrainingRun], int | None]:
+    """Return (items, active_id) for the training_runs table.
+
+    Sort key: completed_at DESC NULLS LAST, then started_at DESC, so
+    runs that are still in flight (completed_at IS NULL) sit at the
+    bottom rather than getting promoted past completed runs by their
+    started_at.
+
+    Status derivation, server-side so the frontend doesn't have to
+    re-do it on every render:
+      - failed:    f1_score is NULL or < 0.5
+      - active:    the most recently completed run with f1 >= 0.5
+      - completed: any other successful run
+
+    `active_id` mirrors the row whose status came back "active", or
+    None when no run qualifies (e.g. fresh DB before seed).
+    """
+    sql = (
+        "SELECT id, started_at, completed_at, dataset, f1_score, "
+        "       precision_score, recall_score, artifacts_path, notes "
+        "FROM training_runs "
+        "ORDER BY completed_at DESC NULLS LAST, started_at DESC "
+        "LIMIT $1"
+    )
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(sql, limit)
+
+    # Find the id of the active run — the most recently completed
+    # row with f1 >= the floor. Iterate in the already-sorted order.
+    active_id: int | None = None
+    for r in rows:
+        f1 = r["f1_score"]
+        if r["completed_at"] is not None and f1 is not None and float(f1) >= _TRAINING_RUN_F1_FLOOR:
+            active_id = int(r["id"])
+            break
+
+    items: list[TrainingRun] = []
+    for r in rows:
+        rid = int(r["id"])
+        f1 = r["f1_score"]
+        if f1 is None or float(f1) < _TRAINING_RUN_F1_FLOOR:
+            status = "failed"
+        elif rid == active_id:
+            status = "active"
+        else:
+            status = "completed"
+        items.append(TrainingRun(
+            id=rid,
+            started_at=r["started_at"],
+            completed_at=r["completed_at"],
+            dataset=r["dataset"],
+            f1_score=float(f1) if f1 is not None else None,
+            precision_score=float(r["precision_score"]) if r["precision_score"] is not None else None,
+            recall_score=float(r["recall_score"]) if r["recall_score"] is not None else None,
+            artifacts_path=r["artifacts_path"],
+            notes=r["notes"] or "",
+            status=status,  # type: ignore[arg-type]
+        ))
+    return items, active_id
+
+
 # -- drift ------------------------------------------------------------------
+
+
+_DRIFT_HIGH_THRESHOLD = 0.40
+_DRIFT_CRITICAL_THRESHOLD = 0.55
+
+
+def _band_drift_status(psi: float) -> str:
+    """Threshold banding for the synthetic-proxy drift score.
+
+    psi <  0.40           → healthy
+    0.40 <= psi <  0.55   → drift_high
+    psi >= 0.55           → drift_critical
+
+    These thresholds were chosen so typical operation on the trained
+    domains (OpenStack, BGL through the OS-trained model) sits well
+    inside "healthy" — std-dev of confidences for those datasets is
+    ~0.20-0.30 — while a genuinely-shifted distribution (e.g. all-INFO
+    replay or a corrupted upload that produces uniformly low-confidence
+    rows) pushes std-dev above 0.40 and starts flipping the badge.
+    """
+    if psi >= _DRIFT_CRITICAL_THRESHOLD:
+        return "drift_critical"
+    if psi >= _DRIFT_HIGH_THRESHOLD:
+        return "drift_high"
+    return "healthy"
 
 
 async def drift_status(pool: asyncpg.Pool) -> DriftStatus:
     """Most recent drift event + last retrain.
 
     When there's no drift_events row recorded (fresh DB / no drift
-    detected yet), we surface a synthetic baseline PSI computed from
-    the confidence distribution of recent anomalies. This avoids the
-    dashboard showing a constant `0.00` healthy score, which reads as
-    "drift detection isn't running" rather than the truth: "no drift
-    detected, but the system is sampling and computing live".
+    detected yet), we surface a synthetic baseline computed from the
+    confidence distribution of recent anomalies. The synthetic score
+    is the std-dev of the last 200 anomaly confidences. True PSI
+    requires a paired reference distribution; this proxy tracks the
+    same underlying signal (input variability) without needing the
+    reference set baked in.
 
-    The synthetic score is the std-dev of the last 200 anomaly
-    confidences, capped at the healthy/drift_high boundary (0.10).
-    True PSI requires a paired reference distribution; this proxy
-    tracks the same underlying signal (input variability) without
-    needing the reference set baked in. When a real drift_events row
-    is inserted by a future periodic detector, that takes precedence.
+    The previous version of this function clamped the synthetic value
+    at 0.099 so the status would always read "healthy", which made the
+    UI display 0.10 for every dataset regardless of actual variability.
+    The clamp is now gone: the synthetic score is reported honestly,
+    banded into healthy / drift_high / drift_critical via the same
+    thresholds used for real drift events. The response carries
+    `is_synthetic=True` so the frontend can label the number as a
+    proxy.
+
+    When a real drift_events row is inserted by a future periodic
+    detector, that takes precedence and `is_synthetic=False`.
     """
     async with pool.acquire() as conn:
         drift_row = await conn.fetchrow(
@@ -520,14 +670,16 @@ async def drift_status(pool: asyncpg.Pool) -> DriftStatus:
             )
 
     if drift_row is None:
-        # Cap at 0.099 so the status stays "healthy" — anything above
-        # that boundary should come from a real drift_events insert.
-        psi = min(0.099, max(0.0, float(baseline or 0.0)))
+        # Synthetic path: clip only to the schema's [0, 1] range, no
+        # artificial "stay healthy" cap. Status is derived from the
+        # same banding the real path uses.
+        psi = min(1.0, max(0.0, float(baseline or 0.0)))
         return DriftStatus(
             drift_score=psi,
             last_retrain=last_retrain,
-            status="healthy",
+            status=_band_drift_status(psi),
             psi_score=psi,
+            is_synthetic=True,
         )
     psi = float(drift_row["psi_score"])
     severity = drift_row["severity"]  # 'drift_high' | 'drift_critical'
@@ -536,4 +688,5 @@ async def drift_status(pool: asyncpg.Pool) -> DriftStatus:
         last_retrain=last_retrain,
         status=severity,
         psi_score=psi,
+        is_synthetic=False,
     )

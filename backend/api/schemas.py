@@ -132,6 +132,12 @@ class DriftStatus(BaseModel):
     last_retrain: IsoUtcDatetime | None = None
     status: DriftLevel
     psi_score: float = Field(ge=0.0)
+    # Additive optional flag (default False): True when the score is a
+    # synthetic proxy (std-dev of recent confidences) rather than a
+    # real PSI from a `drift_events` row. Lets the frontend render a
+    # "synthetic indicator" subtext without breaking older clients
+    # that don't read this field.
+    is_synthetic: bool = False
 
 
 # ---------- Feedback ----------
@@ -155,6 +161,12 @@ class FeedbackHistoryItem(BaseModel):
     source: str
     log_template: str
     severity: Severity
+    # Postmortem snippet from the RAG worker. Empty string when the
+    # explainer hasn't run yet for this anomaly (status != "ready");
+    # the Incidents page falls back to log_template when blank.
+    # Additive optional field with default "" so older API consumers
+    # that don't read it stay compatible.
+    root_cause: str = ""
 
 
 class FeedbackHistoryResponse(BaseModel):
@@ -163,6 +175,67 @@ class FeedbackHistoryResponse(BaseModel):
     total: int = Field(ge=0)
     true_positive: int = Field(ge=0)
     false_positive: int = Field(ge=0)
+
+
+# ---------- System services + queue (GET /api/v1/system/services etc.) ----
+
+ServiceStatus = Literal["online", "degraded", "offline"]
+
+
+class SystemService(BaseModel):
+    """One row in the System page's services grid. `status` is the
+    live probe outcome; `detail` is a short human-readable line shown
+    under the name."""
+    name: str
+    status: ServiceStatus
+    detail: str
+
+
+class SystemServicesResponse(BaseModel):
+    items: list[SystemService]
+
+
+class SystemQueueResponse(BaseModel):
+    """Snapshot of the pending-explanation queue. Lets the System page
+    show "is the RAG worker keeping up?" without instrumenting the
+    worker itself."""
+    pending: int = Field(ge=0)
+    ready: int = Field(ge=0)
+    failed: int = Field(ge=0)
+    oldest_pending_id: str | None = None
+    oldest_pending_at: IsoUtcDatetime | None = None
+
+
+# ---------- Training runs (GET /api/v1/training/runs) ----------
+
+TrainingRunStatus = Literal["active", "completed", "failed"]
+
+
+class TrainingRun(BaseModel):
+    """One row of `training_runs`. Mirrors the table 1:1 plus a derived
+    `status` field — "active" for the most-recently-completed run with
+    a usable F1 (the model currently loaded into the live detector),
+    "failed" for runs that didn't reach F1 >= 0.5, "completed" for
+    older successful runs.
+    """
+    id: int
+    started_at: IsoUtcDatetime
+    completed_at: IsoUtcDatetime | None = None
+    dataset: str
+    f1_score: float | None = None
+    precision_score: float | None = None
+    recall_score: float | None = None
+    artifacts_path: str | None = None
+    notes: str = ""
+    status: TrainingRunStatus
+
+
+class TrainingRunsResponse(BaseModel):
+    """GET /api/v1/training/runs. Newest first. `active_id` is the id
+    of the run currently loaded in the detector — usually the most
+    recently completed successful run."""
+    items: list[TrainingRun]
+    active_id: int | None = None
 
 
 # ---------- Upload (POST /api/v1/upload) ----------

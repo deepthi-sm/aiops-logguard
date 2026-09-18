@@ -94,6 +94,10 @@ export interface DriftStatus {
   last_retrain: string | null;
   status: DriftLevel;
   psi_score: number;
+  // Optional, default false on older API responses. True when the
+  // score is a synthetic proxy (std-dev of recent confidences) rather
+  // than a real PSI from a `drift_events` row.
+  is_synthetic?: boolean;
 }
 
 export interface FeedbackRequest {
@@ -111,6 +115,10 @@ export interface FeedbackHistoryItem {
   source: string;
   log_template: string;
   severity: Severity;
+  // Postmortem snippet from the RAG worker. Empty string when the
+  // explainer hasn't run yet (still pending / failed). The Incidents
+  // page falls back to log_template when blank.
+  root_cause?: string;
 }
 
 export interface FeedbackHistoryResponse {
@@ -118,6 +126,50 @@ export interface FeedbackHistoryResponse {
   total: number;
   true_positive: number;
   false_positive: number;
+}
+
+// -- System services + queue ---------------------------------------------
+
+export type ServiceStatus = "online" | "degraded" | "offline";
+
+export interface SystemService {
+  name: string;
+  status: ServiceStatus;
+  detail: string;
+}
+
+export interface SystemServicesResponse {
+  items: SystemService[];
+}
+
+export interface SystemQueueResponse {
+  pending: number;
+  ready: number;
+  failed: number;
+  oldest_pending_id: string | null;
+  oldest_pending_at: string | null;
+}
+
+// -- Training runs --------------------------------------------------------
+
+export type TrainingRunStatus = "active" | "completed" | "failed";
+
+export interface TrainingRun {
+  id: number;
+  started_at: string;        // ISO 8601 UTC
+  completed_at: string | null;
+  dataset: string;
+  f1_score: number | null;
+  precision_score: number | null;
+  recall_score: number | null;
+  artifacts_path: string | null;
+  notes: string;
+  status: TrainingRunStatus;
+}
+
+export interface TrainingRunsResponse {
+  items: TrainingRun[];
+  active_id: number | null;
 }
 
 // -- Upload ---------------------------------------------------------------

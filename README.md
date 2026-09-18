@@ -63,6 +63,44 @@ aiops-logguard/
 - **RAG design:** `docs/architecture/rag_design.md`
 - **For Claude Code agents:** `CLAUDE.md`
 
+## LLaMA / GPU deployment
+
+The RAG worker calls Ollama on every detected anomaly — no precomputed
+cache short-circuit. Per-call latency is bounded by model + hardware:
+
+| Model         | CPU         | GPU       |
+| ------------- | ----------- | --------- |
+| `llama3.2:1b` | ~15-30 s    | ~1-2 s    |
+| `llama3:8b`   | ~60-180 s   | ~3-5 s    |
+
+For the demo we point the worker at a GPU-hosted Ollama and run
+`llama3:8b` for postmortem-quality output. For local CPU dev we
+fall back to `llama3.2:1b`.
+
+Two env vars on the RAG worker (and on the precompute scripts) control
+this:
+
+```bash
+# Default — talk to the docker-compose Ollama on this machine.
+LOGGUARD_LLAMA_HOST=http://localhost:11434
+LOGGUARD_LLAMA_MODEL=llama3:8b
+
+# CPU-only laptop dev — switch to the smaller model.
+LOGGUARD_LLAMA_MODEL=llama3.2:1b
+
+# Remote GPU deployment — point at the GPU box's Ollama.
+LOGGUARD_LLAMA_HOST=http://gpu-box.example:11434
+LOGGUARD_LLAMA_MODEL=llama3:8b
+```
+
+The remote Ollama needs to be reachable from the RAG worker over HTTP
+(port 11434 by default) and have the requested model already pulled
+(`ollama pull llama3:8b` on the GPU box).
+
+`LOGGUARD_LLAMA_TIMEOUT_S` (default 300) bounds individual call time.
+Tighten for GPU runs if you want faster failure detection on a hung
+remote.
+
 ## Team
 
 3-person academic project, Phase 1 Review 3.
