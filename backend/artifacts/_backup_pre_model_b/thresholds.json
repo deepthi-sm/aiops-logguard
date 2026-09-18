@@ -1,0 +1,8 @@
+{
+  "w1": 0.5,
+  "w2": 0.5,
+  "anomaly_threshold": 0.55,
+  "confidence_threshold": 0.3,
+  "ae_error_p10": 1.8368377041610984e-08,
+  "ae_error_p90": 5.118679382576374e-07
+}
