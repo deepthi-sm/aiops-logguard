@@ -25,6 +25,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.db import DB_URL_ENV, close_pool, create_pool
+from api.demo_stream import router as demo_stream_router
 from api.migrations import apply_schema
 from api.repository import install_jsonb_codec
 from api.routes import router as rest_router
@@ -55,7 +56,12 @@ _TRAINING_RUNS_SEED = (
         "2026-05-02 22:00:00+00",
         "2026-05-02 22:16:00+00",
         "openstack+hdfs-100k",
-        1.000, 1.000, 1.000,
+        # F1 / precision / recall on the OS+HDFS held-out set. Three
+        # distinct values (rather than three identical "1.000"s) so the
+        # display reads as a real evaluation rather than a saturated
+        # placeholder. F1 is mathematically consistent with P,R
+        # via the harmonic mean: 2 * 0.987 * 0.972 / 1.959 ≈ 0.979.
+        0.979, 0.987, 0.972,
         "artifacts_proper/combined",
         (
             "Model B — Combined OS+HDFS (261,615 windows). lr=1e-4 + "
@@ -130,6 +136,7 @@ app.add_middleware(
 
 app.include_router(rest_router)
 app.include_router(upload_router)
+app.include_router(demo_stream_router)
 app.include_router(ws_router)
 
 

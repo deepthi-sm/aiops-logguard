@@ -60,7 +60,7 @@ export function TimelineChart() {
               <BarChart
                 data={data.buckets}
                 barCategoryGap={2}
-                margin={{ top: 8, right: 8, bottom: 4, left: 0 }}
+                margin={{ top: 8, right: 8, bottom: 4, left: 8 }}
               >
                 <CartesianGrid
                   strokeDasharray="3 3"
@@ -84,12 +84,16 @@ export function TimelineChart() {
                   stroke="var(--text-tertiary)"
                   tick={{ fill: "var(--text-tertiary)", fontSize: 10 }}
                   allowDecimals={false}
-                  width={36}
+                  // 56 px so 4-digit tick labels (e.g. "1200") and the
+                  // rotated "Anomalies" axis label stop fighting for
+                  // the same channel — the previous 36 px width caused
+                  // them to overlap once anomaly counts hit 4 digits.
+                  width={56}
                   label={{
                     value: "Anomalies",
                     angle: -90,
                     position: "insideLeft",
-                    offset: 12,
+                    offset: 0,
                     style: { fill: "var(--text-tertiary)", fontSize: 10 },
                   }}
                 />

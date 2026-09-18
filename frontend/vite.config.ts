@@ -21,7 +21,7 @@ export default defineConfig({
       // matched by the /api rule first (HTTP-only) and the upgrade
       // handshake silently 404s on the dev server.
       "/api": {
-        target: "http://localhost:8000",
+        target: "http://127.0.0.1:8000",
         ws: true,
         changeOrigin: false,
       },

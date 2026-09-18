@@ -67,7 +67,12 @@ export function AnomalyTable({ items, showClusterAffordance = true }: AnomalyTab
                 "text-primary",
               )}
             >
-              {formatScore(a.confidence, 0)}
+              {/* digits=2 — saturated cross-domain anomalies cluster
+                  in a tight confidence band (e.g. 0.6627–0.6632 on
+                  BGL through the OpenStack model). 0-decimal "%"
+                  rounds them all to "66%" and the table reads as
+                  hardcoded. Two decimals exposes the variation. */}
+              {formatScore(a.confidence, 2)}
             </div>
             <div className="text-right font-mono text-[12px] tabular-nums text-tertiary">
               {showClusterAffordance && a.cluster_size > 1 ? (

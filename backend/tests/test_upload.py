@@ -156,14 +156,18 @@ def test_upload_rate_param_is_capped(fast_client, fake_redis_factory):
 
 
 def test_upload_custom_rate_demo_friendly(fast_client, fake_redis_factory):
-    """`?rate=500` is accepted (under the cap) for demo acceleration."""
+    """`?rate=100` is accepted (at the cap) for demo acceleration.
+
+    The previous cap was 1000 lines/sec; tightened to 100 to make
+    "rate" a meaningful demo dial rather than a way to slam Redis.
+    """
     payload = _make_logfile(20)
     r = fast_client.post(
-        "/api/v1/upload?rate=500",
+        "/api/v1/upload?rate=100",
         files={"file": ("x.log", payload, "text/plain")},
     )
     assert r.status_code == 202
-    assert r.json()["rate"] == 500
+    assert r.json()["rate"] == 100
 
 
 # ---------- GET /upload/{job_id}/status ----------
@@ -190,7 +194,7 @@ async def test_status_eventually_reaches_completed(fast_client, fake_redis_facto
     the contract the frontend's polling loop depends on."""
     payload = _make_logfile(15)
     r = fast_client.post(
-        "/api/v1/upload?rate=1000",
+        "/api/v1/upload?rate=100",
         files={"file": ("tiny.log", payload, "text/plain")},
     )
     assert r.status_code == 202

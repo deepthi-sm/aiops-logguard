@@ -4,13 +4,13 @@ import { cn } from "../lib/cn";
 import { useTheme, type Theme } from "../hooks/useTheme";
 
 /**
- * /settings — three-tab settings page (General / Alerting / Data sources).
+ * /settings — two-tab settings page (General / Data sources).
  *
  *   ┌────────────────────────────────────────────────────────────┐
  *   │  Preferences                                               │
  *   │  Settings                                                  │
  *   │  ───────────────────────────────────────────────────────   │
- *   │  [General]  [Alerting]  [Data sources]                     │
+ *   │  [General]  [Data sources]                                 │
  *   │  ───────────────────────────────────────────────────────   │
  *   │  Theme:        ◉ Dark    ◯ Light                           │
  *   │  Default page: ◉ Dashboard ◯ Anomalies                     │
@@ -20,9 +20,15 @@ import { useTheme, type Theme } from "../hooks/useTheme";
  * Most fields are read-only for the demo — the team isn't persisting
  * settings yet. Theme is the one fully-wired control (delegates to
  * `useTheme`, which writes localStorage).
+ *
+ * The Alerting tab was removed: no PagerDuty / Slack / email
+ * channels are wired in this build, so a dedicated configuration
+ * tab was misleading. If outbound alerting lands later, restore the
+ * tab and the AlertingTab + ChannelStatus components from git
+ * history (commit prior to the audit's removal).
  */
 
-type Tab = "general" | "alerting" | "data";
+type Tab = "general" | "data";
 
 export function Settings() {
   const [tab, setTab] = useState<Tab>("general");
@@ -41,19 +47,12 @@ export function Settings() {
         <TabButton active={tab === "general"} onClick={() => setTab("general")}>
           General
         </TabButton>
-        <TabButton
-          active={tab === "alerting"}
-          onClick={() => setTab("alerting")}
-        >
-          Alerting
-        </TabButton>
         <TabButton active={tab === "data"} onClick={() => setTab("data")}>
           Data sources
         </TabButton>
       </div>
 
       {tab === "general" && <GeneralTab />}
-      {tab === "alerting" && <AlertingTab />}
       {tab === "data" && <DataSourcesTab />}
     </div>
   );
@@ -131,54 +130,6 @@ function GeneralTab() {
         <span className="font-mono text-[12px] text-secondary">5s</span>
       </SettingRow>
     </div>
-  );
-}
-
-// -- Alerting --------------------------------------------------------------
-
-function AlertingTab() {
-  return (
-    <div className="rounded-lg border-[0.5px] border-border-subtle bg-card">
-      <SettingRow
-        label="PagerDuty"
-        hint="Critical anomalies page on-call."
-      >
-        <ChannelStatus configured={false} />
-      </SettingRow>
-      <SettingRow label="Slack webhook" hint="Critical + warning route here.">
-        <ChannelStatus configured={false} />
-      </SettingRow>
-      <SettingRow label="Email digest" hint="Daily roll-up to engineering@.">
-        <ChannelStatus configured={false} />
-      </SettingRow>
-      <SettingRow
-        label="Severity threshold"
-        hint="Minimum severity that triggers a page."
-      >
-        <span className="rounded-md border-[0.5px] border-critical/40 bg-critical/10 px-2 py-0.5 text-[10px] uppercase tracking-wider text-critical">
-          critical
-        </span>
-      </SettingRow>
-    </div>
-  );
-}
-
-function ChannelStatus({ configured }: { configured: boolean }) {
-  return (
-    <span
-      className={cn(
-        "inline-flex items-center gap-1.5 text-[11px]",
-        configured ? "text-success" : "text-tertiary",
-      )}
-    >
-      <span
-        className={cn(
-          "h-1.5 w-1.5 rounded-full",
-          configured ? "bg-success" : "bg-border-default",
-        )}
-      />
-      {configured ? "configured" : "not configured"}
-    </span>
   );
 }
 
